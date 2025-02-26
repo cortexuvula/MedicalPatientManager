@@ -104,9 +104,36 @@ class AuditLog:
     ACTION_LOGIN = "login"
     ACTION_LOGOUT = "logout"
     ACTION_SHARE = "share"
+    ACTION_REVOKE = "revoke"
+    ACTION_EXPORT = "export"
+    ACTION_IMPORT = "import"
+    ACTION_SEARCH = "search"
+    ACTION_REPORT = "report"
+    ACTION_PERMISSION_CHANGE = "permission_change"
+    ACTION_PASSWORD_CHANGE = "password_change"
+    ACTION_PASSWORD_RESET = "password_reset"
+    ACTION_ACCOUNT_CREATE = "account_create"
+    ACTION_ACCOUNT_DISABLE = "account_disable"
+    ACTION_SYSTEM_CONFIG = "system_config"
+    ACTION_FAILED_LOGIN = "failed_login"
+    
+    # Entity types
+    ENTITY_PATIENT = "patient"
+    ENTITY_PROGRAM = "program"
+    ENTITY_TASK = "task"
+    ENTITY_USER = "user"
+    ENTITY_SYSTEM = "system"
+    ENTITY_REPORT = "report"
+    ENTITY_AUDIT = "audit"
+    
+    # Severity levels - can be used for filtering and reporting
+    SEVERITY_INFO = "info"
+    SEVERITY_WARNING = "warning"
+    SEVERITY_ALERT = "alert"
+    SEVERITY_CRITICAL = "critical"
     
     def __init__(self, user_id=None, action=None, entity_type=None, entity_id=None, 
-                 details=None, ip_address=None, id=None):
+                 details=None, ip_address=None, id=None, severity=None):
         self.id = id
         self.user_id = user_id  # User who performed the action
         self.action = action  # Type of action performed
@@ -115,3 +142,68 @@ class AuditLog:
         self.details = details  # Additional details about the action
         self.timestamp = datetime.now()
         self.ip_address = ip_address  # IP address from which the action was performed
+        self.severity = severity or self.SEVERITY_INFO  # Severity level of the event
+    
+    def is_critical(self):
+        """Check if this is a critical event."""
+        return self.severity == self.SEVERITY_CRITICAL
+    
+    def is_security_related(self):
+        """Check if this event is security-related."""
+        security_actions = [
+            self.ACTION_LOGIN, 
+            self.ACTION_LOGOUT, 
+            self.ACTION_FAILED_LOGIN,
+            self.ACTION_PASSWORD_CHANGE,
+            self.ACTION_PASSWORD_RESET,
+            self.ACTION_PERMISSION_CHANGE,
+            self.ACTION_ACCOUNT_CREATE,
+            self.ACTION_ACCOUNT_DISABLE
+        ]
+        return self.action in security_actions
+    
+    def is_data_access(self):
+        """Check if this event involves data access."""
+        return self.action == self.ACTION_READ
+    
+    def is_data_modification(self):
+        """Check if this event involves data modification."""
+        return self.action in [
+            self.ACTION_CREATE, 
+            self.ACTION_UPDATE, 
+            self.ACTION_DELETE,
+            self.ACTION_IMPORT
+        ]
+    
+    def is_sharing_related(self):
+        """Check if this event involves sharing permissions."""
+        return self.action in [self.ACTION_SHARE, self.ACTION_REVOKE]
+    
+    def get_formatted_timestamp(self, format="%Y-%m-%d %H:%M:%S"):
+        """Get a formatted string of the timestamp."""
+        if not self.timestamp:
+            return "No timestamp"
+            
+        if isinstance(self.timestamp, str):
+            try:
+                # Try to parse the timestamp string to a datetime object
+                # SQLite timestamps may have different formats
+                try:
+                    dt = datetime.strptime(self.timestamp, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        dt = datetime.strptime(self.timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                    except ValueError:
+                        return self.timestamp
+                return dt.strftime(format)
+            except Exception as e:
+                print(f"Error formatting timestamp '{self.timestamp}': {e}")
+                return str(self.timestamp)
+        elif isinstance(self.timestamp, datetime):
+            return self.timestamp.strftime(format)
+        return str(self.timestamp)
+    
+    def __str__(self):
+        """Return a string representation of the audit log entry."""
+        timestamp = self.get_formatted_timestamp()
+        return f"[{timestamp}] {self.action.upper()} {self.entity_type}:{self.entity_id} by user:{self.user_id}"

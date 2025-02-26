@@ -9,12 +9,15 @@ from PyQt5.QtCore import Qt, QSize, QSettings
 from PyQt5.QtGui import QFont, QIcon
 
 from database import Database
-from models import Patient, Program, Task, User, SharedAccess
+from models import Patient, Program, Task, User, SharedAccess, AuditLog
 from kanban_board import KanbanBoard
 from login_dialog import LoginDialog, UserProfileDialog
-from security import hash_password, verify_password, is_strong_password, PermissionManager
+from security import hash_password, verify_password, is_strong_password, PermissionManager, sanitize_data_for_logs
 from admin_panel import AdminPanel
 from share_access_dialog import ShareAccessDialog
+from audit_log_viewer import AuditLogViewer
+from audit_logger import AuditLogger
+from session_manager import SessionManager
 
 
 class MedicalPatientManager(QMainWindow):
@@ -23,6 +26,16 @@ class MedicalPatientManager(QMainWindow):
         self.db = Database()
         self.settings = QSettings("CascadeTeam", "MedicalPatientManager")
         self.current_user = None
+        self.is_logged_in = False
+        self.current_patient = None
+        self.current_program = None
+        
+        # Initialize the audit logger
+        self.audit_logger = AuditLogger(self.db)
+        
+        # Initialize the session manager
+        self.session_manager = SessionManager()
+
         self.initUI()
         self.checkLogin()
         
@@ -185,7 +198,7 @@ class MedicalPatientManager(QMainWindow):
         
         # Audit log action
         audit_log_action = QAction("View Audit Log", self)
-        audit_log_action.triggered.connect(self.showAuditLog)
+        audit_log_action.triggered.connect(self.showAuditLogViewer)
         self.admin_menu.addAction(audit_log_action)
         
         # Hide admin menu by default (will show based on permission)
@@ -219,6 +232,19 @@ class MedicalPatientManager(QMainWindow):
     def loginUser(self, user):
         """Set the current user and update UI."""
         self.current_user = user
+        self.is_logged_in = True
+        
+        # Create a session
+        session_id = self.session_manager.create_session(user.id)
+        
+        # Log successful login
+        self.audit_logger.log_login(
+            user_id=user.id,
+            success=True,
+            details=f"User logged in from application"
+        )
+        
+        # Update UI
         self.updateUserDisplay()
         
         # Save credentials if remember me was checked
@@ -239,12 +265,21 @@ class MedicalPatientManager(QMainWindow):
         if not self.current_user:
             return
             
+        # End all user sessions
+        self.session_manager.end_all_user_sessions(self.current_user.id)
+        
+        # Log logout
+        self.audit_logger.log_logout(
+            user_id=self.current_user.id
+        )
+        
         # Clear settings
         self.settings.remove("username")
         self.settings.remove("password")
         
         # Clear current user
         self.current_user = None
+        self.is_logged_in = False
         self.updateUserDisplay()
         
         # Hide admin menu
@@ -379,6 +414,16 @@ class MedicalPatientManager(QMainWindow):
                     )
                     self.db.add_patient(patient)
                     self.loadPatients()
+                    
+                    # Log the action
+                    self.audit_logger.log_data_modification(
+                        user_id=self.current_user.id,
+                        action=AuditLog.ACTION_CREATE,
+                        entity_type=AuditLog.ENTITY_PATIENT,
+                        entity_id=patient.id,
+                        details=f"Created new patient: {first_name} {last_name}"
+                    )
+                    
                     self.status_bar.showMessage(f"Patient {first_name} {last_name} added", 3000)
     
     def editPatient(self):
@@ -415,6 +460,15 @@ class MedicalPatientManager(QMainWindow):
                     if self.selected_patient_id == patient_id:
                         self.patient_info.setText(f"{patient.first_name} {patient.last_name} - DOB: {patient.date_of_birth}")
                     
+                    # Log the action
+                    self.audit_logger.log_data_modification(
+                        user_id=self.current_user.id,
+                        action=AuditLog.ACTION_UPDATE,
+                        entity_type=AuditLog.ENTITY_PATIENT,
+                        entity_id=patient.id,
+                        details=f"Updated patient: {first_name} {last_name}"
+                    )
+                    
                     self.status_bar.showMessage(f"Patient updated", 3000)
     
     def deletePatient(self):
@@ -445,6 +499,15 @@ class MedicalPatientManager(QMainWindow):
             self.db.delete_patient(patient_id)
             self.loadPatients()
             self.clearPatientView()
+            
+            # Log the action
+            self.audit_logger.log_data_modification(
+                user_id=self.current_user.id,
+                action=AuditLog.ACTION_DELETE,
+                entity_type=AuditLog.ENTITY_PATIENT,
+                entity_id=patient_id,
+                details=f"Deleted patient: {patient.first_name} {patient.last_name}"
+            )
     
     def clearPatientView(self):
         self.selected_patient_id = None
@@ -517,6 +580,14 @@ class MedicalPatientManager(QMainWindow):
                     
                     owner_name = self.db.get_user_name_by_id(patient.user_id)
                     self.patient_info.setToolTip(f"Owner: {owner_name}\nYour Access: {access_text}")
+                    
+                # Log the access
+                self.audit_logger.log_data_access(
+                    user_id=self.current_user.id,
+                    entity_type=AuditLog.ENTITY_PATIENT,
+                    entity_id=patient_id,
+                    details=f"Viewed patient: {patient.first_name} {patient.last_name}"
+                )
     
     def loadPatientPrograms(self, patient_id):
         # Clear existing tabs
@@ -618,6 +689,16 @@ class MedicalPatientManager(QMainWindow):
             
             # Reload programs
             self.loadPatientPrograms(self.selected_patient_id)
+            
+            # Log the action
+            self.audit_logger.log_data_modification(
+                user_id=self.current_user.id,
+                action=AuditLog.ACTION_CREATE,
+                entity_type=AuditLog.ENTITY_PROGRAM,
+                entity_id=program_id,
+                details=f"Created new program: {program_name}"
+            )
+            
             self.status_bar.showMessage(f"Program '{program_name}' added", 3000)
     
     def closeTab(self, index):
@@ -637,6 +718,16 @@ class MedicalPatientManager(QMainWindow):
                 self.db.delete_program(program_widget.program_id)
             
             self.program_tabs.removeTab(index)
+            
+            # Log the action
+            self.audit_logger.log_data_modification(
+                user_id=self.current_user.id,
+                action=AuditLog.ACTION_DELETE,
+                entity_type=AuditLog.ENTITY_PROGRAM,
+                entity_id=program_widget.program_id,
+                details=f"Deleted program: {tab_text}"
+            )
+            
             self.status_bar.showMessage(f"Program '{tab_text}' deleted", 3000)
     
     def showAdminPanel(self):
@@ -648,13 +739,23 @@ class MedicalPatientManager(QMainWindow):
         admin_panel = AdminPanel(self.db, self.current_user, self)
         admin_panel.exec_()
     
-    def showAuditLog(self):
-        """Show the audit log viewer."""
-        if not self.current_user or not PermissionManager.has_permission(self.current_user, 'audit.view'):
-            QMessageBox.warning(self, "Access Denied", "You must be an administrator to view the audit log.")
+    def showAuditLogViewer(self):
+        """Show the audit log viewer dialog."""
+        if not PermissionManager.has_permission(self.current_user, 'audit.view'):
+            QMessageBox.warning(self, "Access Denied", "You don't have permission to view audit logs.")
             return
             
-        QMessageBox.information(self, "Audit Log", "Audit log feature is under development.")
+        # Log the action
+        self.audit_logger.log_data_access(
+            user_id=self.current_user.id,
+            entity_type=AuditLog.ENTITY_AUDIT,
+            entity_id=None,
+            details="Viewed audit logs"
+        )
+            
+        # Show the audit log viewer
+        dialog = AuditLogViewer(self.db, self.current_user, self)
+        dialog.exec_()
     
     def showUserProfile(self):
         """Show the user profile dialog."""
@@ -694,6 +795,15 @@ class MedicalPatientManager(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             # Refresh patient list to show updated sharing status
             self.loadPatients()
+            
+            # Log the action
+            self.audit_logger.log_event(
+                user_id=self.current_user.id,
+                action=AuditLog.ACTION_SHARE,
+                entity_type=AuditLog.ENTITY_PATIENT,
+                entity_id=patient.id,
+                details=f"Shared patient access: {patient.first_name} {patient.last_name}"
+            )
 
 
 if __name__ == "__main__":

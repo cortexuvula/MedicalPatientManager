@@ -1,7 +1,8 @@
 import os
 import sqlite3
-from models import Patient, Program, Task, User, SharedAccess
+from models import Patient, Program, Task, User, SharedAccess, AuditLog
 from security import hash_password, get_client_ip
+from datetime import datetime, timedelta
 
 
 class Database:
@@ -571,6 +572,7 @@ class Database:
         """Add an entry to the audit log."""
         try:
             cursor = self.conn.cursor()
+            print(f"Adding audit log: user_id={user_id}, action={action}, entity_type={entity_type}, entity_id={entity_id}")
             cursor.execute(
                 """INSERT INTO audit_log 
                    (user_id, action, entity_type, entity_id, details, ip_address) 
@@ -578,10 +580,170 @@ class Database:
                 (user_id, action, entity_type, entity_id, details, ip_address)
             )
             self.conn.commit()
-            return cursor.lastrowid
+            log_id = cursor.lastrowid
+            print(f"Successfully added audit log with ID: {log_id}")
+            return log_id
         except sqlite3.Error as e:
             print(f"Error adding audit log: {e}")
             return None
+    
+    def get_audit_logs(self, user_id=None, action=None, entity_type=None, entity_id=None, 
+                     start_date=None, end_date=None, limit=100, offset=0):
+        """Retrieve audit logs based on filtering criteria.
+        
+        Args:
+            user_id: Filter by user ID
+            action: Filter by action type
+            entity_type: Filter by entity type
+            entity_id: Filter by entity ID
+            start_date: Filter logs after this date (string in YYYY-MM-DD format)
+            end_date: Filter logs before this date (string in YYYY-MM-DD format)
+            limit: Maximum number of logs to retrieve
+            offset: Offset for pagination
+            
+        Returns:
+            list: List of matching AuditLog objects
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Build query dynamically based on provided filters
+            query = "SELECT * FROM audit_log WHERE 1=1"
+            params = []
+            
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params.append(user_id)
+                
+            if action:
+                query += " AND action = ?"
+                params.append(action)
+                
+            if entity_type:
+                query += " AND entity_type = ?"
+                params.append(entity_type)
+                
+            if entity_id is not None:
+                query += " AND entity_id = ?"
+                params.append(entity_id)
+                
+            if start_date:
+                query += " AND date(timestamp) >= date(?)"
+                params.append(start_date)
+                
+            if end_date:
+                query += " AND date(timestamp) <= date(?)"
+                params.append(end_date + " 23:59:59")  # Include the whole day
+            
+            # Add ordering, limit, and offset
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            print(f"Executing query: {query}")
+            print(f"With parameters: {params}")
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            print(f"Fetched {len(rows)} rows from database")
+            
+            logs = []
+            for row in rows:
+                log = AuditLog(
+                    id=row['id'],
+                    user_id=row['user_id'],
+                    action=row['action'],
+                    entity_type=row['entity_type'],
+                    entity_id=row['entity_id'],
+                    details=row['details'],
+                    ip_address=row['ip_address']
+                )
+                # Set timestamp if it exists in the row
+                if 'timestamp' in dict(row).keys():
+                    log.timestamp = row['timestamp']
+                logs.append(log)
+            
+            print(f"Created {len(logs)} AuditLog objects")    
+            return logs
+            
+        except sqlite3.Error as e:
+            print(f"Error retrieving audit logs: {e}")
+            return []
+    
+    def get_audit_log_by_id(self, log_id):
+        """Get an audit log entry by ID.
+        
+        Args:
+            log_id: ID of the audit log entry
+            
+        Returns:
+            AuditLog: The audit log entry, or None if not found
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM audit_log WHERE id = ?", (log_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                log = AuditLog(
+                    id=row['id'],
+                    user_id=row['user_id'],
+                    action=row['action'],
+                    entity_type=row['entity_type'],
+                    entity_id=row['entity_id'],
+                    details=row['details'],
+                    ip_address=row['ip_address']
+                )
+                # Set timestamp if it exists in the row
+                log.timestamp = row['timestamp'] if 'timestamp' in row.keys() else None
+                return log
+                
+            return None
+            
+        except sqlite3.Error as e:
+            print(f"Error retrieving audit log by ID: {e}")
+            return None
+    
+    def get_audit_logs_for_entity(self, entity_type, entity_id):
+        """Get all audit logs for a specific entity.
+        
+        Args:
+            entity_type: Type of entity
+            entity_id: ID of the entity
+            
+        Returns:
+            list: List of AuditLog objects for the entity
+        """
+        return self.get_audit_logs(entity_type=entity_type, entity_id=entity_id)
+    
+    def purge_old_audit_logs(self, days=365):
+        """Delete audit logs older than a specified number of days.
+        
+        Args:
+            days: Number of days to keep logs for
+            
+        Returns:
+            int: Number of logs deleted
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Calculate the cutoff date
+            cutoff_date = datetime.now() - timedelta(days=days)
+            cutoff_date_str = cutoff_date.strftime("%Y-%m-%d")
+            
+            # Delete logs older than the cutoff date
+            cursor.execute(
+                "DELETE FROM audit_log WHERE timestamp < ?",
+                (cutoff_date_str,)
+            )
+            self.conn.commit()
+            
+            return cursor.rowcount
+            
+        except sqlite3.Error as e:
+            print(f"Error purging old audit logs: {e}")
+            return 0
     
     # Shared access operations
     def add_shared_access(self, shared_access):
