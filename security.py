@@ -263,12 +263,18 @@ class PermissionManager:
         if not user or not user.role:
             return False
         
+        # Debug output
+        print(f"Permission check for user role '{user.role}' and permission '{permission}'")
+        
         # Get all permissions for the user's role
         user_permissions = cls.get_permissions(user.role)
         
+        # Debug output
+        print(f"Available permissions for role '{user.role}': {user_permissions}")
+        
         # Check if the requested permission is in the user's permissions
         return permission in user_permissions
-
+    
     @classmethod
     def can_access_admin_panel(cls, user):
         """Check if a user can access the admin panel.

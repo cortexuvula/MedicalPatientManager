@@ -259,15 +259,19 @@ class Database:
                 user_data = cursor.fetchone()
                 
                 if user_data:
-                    # Debug information
-                    print(f"Found user data: {dict(user_data)}")
-                    
-                    # Check if password column exists in users table
                     try:
+                        # Check if password column exists in users table
                         password_field = 'password_hash'
                         if 'password_hash' not in dict(user_data) and 'password' in dict(user_data):
                             password_field = 'password'
                             print("Warning: Using 'password' field instead of 'password_hash'")
+                        
+                        # Extract role with proper debugging
+                        user_data_dict = dict(user_data)
+                        print(f"User data keys: {list(user_data_dict.keys())}")
+                        
+                        role = user_data_dict.get('role', 'provider')
+                        print(f"Database role value: '{role}'")
                         
                         user = User(
                             id=user_data['id'],
@@ -275,9 +279,12 @@ class Database:
                             password_hash=user_data[password_field],
                             name=user_data['name'] if 'name' in user_data else None,
                             email=user_data['email'] if 'email' in user_data else None,
-                            role=user_data['role'] if 'role' in user_data else 'provider',
+                            role=role,
                             created_at=user_data['created_at'] if 'created_at' in user_data else None
                         )
+                        # Debug output to verify user role before returning
+                        print(f"Creating User object with role: {role}")
+                        print(f"User object role after creation: {user.role}")
                         return user
                     except Exception as e:
                         print(f"Error creating User object: {e}")
@@ -301,21 +308,18 @@ class Database:
                     print(f"API Error getting user by ID: {response['error']}")
                     return None
                     
-                user_data = response.get('user', {})
-                if not user_data:
-                    print(f"No user data returned from API for ID {user_id}")
+                if 'user' not in response:
+                    print(f"Unexpected response from API: {response}")
                     return None
                     
-                # Create User object from API response
-                role = user_data.get('role', User.ROLE_PROVIDER)
-                
+                user_data = response['user']
                 user = User(
-                    id=user_data.get('id'),
-                    username=user_data.get('username', ''),
+                    id=user_data['id'],
+                    username=user_data['username'],
                     password_hash='',  # No password from API for security
-                    name=user_data.get('name', ''),
-                    email=user_data.get('email', ''),
-                    role=role
+                    name=user_data['name'],
+                    email=user_data['email'],
+                    role=user_data['role']
                 )
                 return user
             except Exception as e:

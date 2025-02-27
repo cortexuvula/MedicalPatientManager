@@ -234,6 +234,9 @@ class MedicalPatientManager(QMainWindow):
         self.current_user = user
         self.is_logged_in = True
         
+        # Debug output to verify user role
+        print(f"User authenticated with role: {user.role}")
+        
         # Create a session
         session_id = self.session_manager.create_session(user.id)
         
@@ -317,6 +320,11 @@ class MedicalPatientManager(QMainWindow):
             self.add_program_btn.setEnabled(False)
             self.admin_menu.menuAction().setVisible(False)
             return
+        
+        # Debug output to verify role checks
+        print(f"Updating UI permissions for role: {self.current_user.role}")
+        print(f"Is admin role detected: {self.current_user.role == 'admin'}")
+        print(f"Can access admin panel: {PermissionManager.can_access_admin_panel(self.current_user)}")
             
         # Check permissions based on user role
         can_create_patient = PermissionManager.has_permission(self.current_user, 'patient.create')

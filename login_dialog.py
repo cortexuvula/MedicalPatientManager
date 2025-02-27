@@ -281,6 +281,18 @@ class LoginDialog(QDialog):
             # Authentication successful - record successful attempt
             login_tracker.record_attempt(username, True)
             
+            # Log the successful login event
+            from audit_logger import AuditLogger
+            try:
+                AuditLogger.log_event(
+                    user_id=user.id,
+                    action="login",
+                    entity_type="user",
+                    entity_id=user.id
+                )
+            except Exception as e:
+                print(f"Warning: Could not log login event: {e}")
+            
             # Emit signal and close dialog
             self.userAuthenticated.emit(user)
             self.accept()

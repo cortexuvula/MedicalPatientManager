@@ -55,7 +55,20 @@ class User:
         self.password_hash = password_hash  # This is the hashed password
         self.name = name
         self.email = email
-        self.role = role or self.ROLE_PROVIDER  # Default to provider role
+        
+        # Debug the role assignment
+        print(f"User.__init__ received role: {role}")
+        
+        # Make sure the role is explicitly set to admin if that's what was passed
+        if role == self.ROLE_ADMIN:
+            self.role = self.ROLE_ADMIN
+        elif role == self.ROLE_ASSISTANT:
+            self.role = self.ROLE_ASSISTANT
+        else:
+            self.role = role or self.ROLE_PROVIDER  # Default to provider role
+            
+        print(f"User.__init__ setting role to: {self.role}")
+        
         self.created_at = created_at
     
     def is_admin(self):
