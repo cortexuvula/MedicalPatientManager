@@ -141,3 +141,6 @@ dmypy.json
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Configuration files
+config.json

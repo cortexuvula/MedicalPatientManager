@@ -112,9 +112,15 @@ class ApiClient:
         """Add a new patient."""
         return self._make_request('POST', 'patients', data=patient_data)
     
-    def update_patient(self, patient_id, patient_data):
-        """Update a patient."""
-        return self._make_request('PUT', f'patients/{patient_id}', data=patient_data)
+    def update_patient(self, patient):
+        """Update a patient's information."""
+        patient_data = {
+            'first_name': patient.first_name,
+            'last_name': patient.last_name,
+            'date_of_birth': patient.date_of_birth,
+            'user_id': patient.user_id
+        }
+        return self._make_request('PUT', f'patients/{patient.id}', data=patient_data)
     
     def delete_patient(self, patient_id):
         """Delete a patient."""

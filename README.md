@@ -4,11 +4,13 @@ A Python application for managing multiple medical patients and their associated
 
 ## Features
 
-- Add and manage multiple patients
-- Create program categories for each patient (Diabetes Management, CKD Management, Pain Management, etc.)
-- Kanban board interface for visualizing patient progress
-- Task management within each program
-- Data persistence for patient records
+- **Patient Management**: Add, edit, and manage multiple patients
+- **Program Categories**: Create customized program categories for each patient (Diabetes Management, CKD Management, Pain Management, etc.)
+- **Kanban Interface**: Visualize patient progress through a Kanban board
+- **Task Management**: Create and track tasks within each program
+- **Data Persistence**: Choose between local or remote data storage
+- **Configuration**: Simple UI for switching between local and remote modes
+- **Multi-User Support**: When in remote mode, multiple users can access the system simultaneously
 
 ## Installation
 
@@ -22,6 +24,26 @@ A Python application for managing multiple medical patients and their associated
    python main.py
    ```
 
+## Configuration
+
+The application can run in either local or remote mode:
+
+1. **Local Mode**: Uses a local SQLite database for data storage (default)
+2. **Remote Mode**: Uses a remote API server for data storage
+
+To configure the application:
+
+1. Copy `config.template.json` to `config.json`
+2. Edit `config.json` to set your preferred configuration:
+   ```json
+   {
+       "mode": "local",
+       "remote_url": "http://your-api-server.com/api",
+       "db_file": "patient_manager.db"
+   }
+   ```
+3. You can also access configuration settings from the application's "File > Configuration" menu
+
 ## Usage
 
 1. Add a new patient using the "Add Patient" button
@@ -29,16 +51,9 @@ A Python application for managing multiple medical patients and their associated
 3. Add programs to a patient's profile
 4. Use the Kanban board to track progress within each program
 
-## Network Configuration
+## Server Setup
 
-The Medical Patient Manager can be run in two modes:
-
-1. **Local Mode**: The default mode, where the application uses a local SQLite database file.
-2. **Remote Mode**: Connects to a server running on another computer to access the database remotely.
-
-### Setting up the Server
-
-To make the database accessible over the network:
+To make the database accessible over the network (remote mode):
 
 1. Install the required dependencies:
    ```
@@ -55,13 +70,13 @@ To make the database accessible over the network:
 
 3. On client computers:
    - Launch the application
-   - Click the "Configuration" button on the login screen
+   - Go to "File > Configuration" or click the "Configuration" button on the login screen
    - Select "Remote Mode"
-   - Enter the server URL in the format: `http://<server_ip>:5000/` (replace `<server_ip>` with the actual IP address of the server)
-   - Click Save and restart the application
-   - Use the test credentials: username: `admin`, password: `admin123`
+   - Enter the server URL in the format: `http://<server_ip>:5000/api` (replace `<server_ip>` with the actual IP address of the server)
+   - Click Save and restart the application when prompted
+   - Use the default test credentials: username: `admin`, password: `admin123`
 
-### Testing the Connection
+## Testing the Connection
 
 The server provides a web interface for testing the connection:
 
@@ -69,7 +84,7 @@ The server provides a web interface for testing the connection:
 2. The page will show the server status and allow you to test the connection
 3. You can use the test credentials (username: `admin`, password: `admin123`) to verify login works
 
-### Troubleshooting Network Issues
+## Troubleshooting
 
 If you're having trouble connecting to the server:
 
@@ -78,46 +93,24 @@ If you're having trouble connecting to the server:
    - Navigate to `http://<server_ip>:5000/` in a web browser on the server computer
 
 2. **Check URL format**:
-   - Make sure you're using `http://<server_ip>:5000/` (with trailing slash)
-   - The application will automatically add the `/api` prefix to API requests
+   - Make sure you're using the correct format: `http://<server_ip>:5000/api`
+   - The trailing `/api` is required for the client application
 
-3. **Test with utilities**:
-   - Run `python test_api_connection.py` to check API connectivity
-   - Run `python test_login.py` to test authentication
+3. **Firewall settings**:
+   - Ensure that port 5000 is open on the server's firewall
+   - For Windows: Control Panel > System and Security > Windows Defender Firewall > Advanced Settings > Inbound Rules
 
-4. **Note about Remote Mode Limitations**:
-   - When running in remote mode, audit logging is limited
-   - Audit log events are logged to the console but not stored in a database
-   - The Audit Log Viewer will not display logs from remote sessions
-   - This is by design due to the distributed nature of the application in remote mode
+4. **Network connectivity**:
+   - Verify that the client computer can reach the server by pinging it: `ping <server_ip>`
+   - Check that both machines are on the same network or have proper routing between networks
 
-5. **Check network connectivity**:
-   - Ping the server from the client machine
-   - Try telnet to the server on port 5000
-   - Check if any VPN or proxy settings might be interfering
+## Security Considerations
 
-6. **Debug logs**:
-   - Run the server with the `--debug` flag for more detailed logs:
-     ```
-     python server.py --host 0.0.0.0 --port 5000 --debug
-     ```
-
-### Firewall Configuration
-
-You may need to configure your firewall to allow connections to port 5000 on the server computer:
-
-1. Open Windows Defender Firewall with Advanced Security
-2. Create a new Inbound Rule
-3. Select "Port" and specify TCP port 5000
-4. Allow the connection
-5. Apply the rule to Domain, Private, and Public networks (or just the ones you need)
-6. Name the rule (e.g., "Medical Patient Manager Server")
-
-### Security Considerations
-
-- The default server implementation does not use HTTPS. For production use, it's recommended to set up SSL/TLS.
-- The server uses basic authentication with username/password. Consider implementing token-based authentication for better security.
-- Only expose the server to trusted networks. Do not expose it directly to the internet without proper security measures.
+- **Default Mode**: The application defaults to local mode for security. Remote mode should only be enabled when needed.
+- **Network Security**: The default server implementation does not use HTTPS. For production use, set up SSL/TLS.
+- **Authentication**: The server uses basic authentication. For higher security, implement token-based authentication.
+- **Network Exposure**: Only expose the server to trusted networks. Never expose it directly to the internet without proper security measures.
+- **Configuration Security**: The `config.json` file contains connection information and is excluded from version control for security reasons.
 
 ## License
 

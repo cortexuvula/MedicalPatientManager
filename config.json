@@ -1,5 +1,5 @@
 {
-    "mode": "local",
+    "mode": "remote",
     "remote_url": "http://127.0.0.1:5000",
     "db_file": "patient_manager.db"
 }

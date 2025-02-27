@@ -1,0 +1,5 @@
+{
+    "mode": "local",
+    "remote_url": "http://localhost:5000/api",
+    "db_file": "patient_manager.db"
+}

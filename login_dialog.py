@@ -83,6 +83,8 @@ class ConfigDialog(QDialog):
     def save_config(self):
         """Save the configuration."""
         from config import Config
+        import sys
+        import os
         
         # Update config object
         config = {
@@ -93,8 +95,28 @@ class ConfigDialog(QDialog):
         
         # Save to file
         if Config.update_config(config):
-            QMessageBox.information(self, "Success", "Configuration saved successfully. Please restart the application for changes to take effect.")
-            self.accept()
+            reply = QMessageBox.question(
+                self, 
+                "Restart Application", 
+                "Configuration saved successfully. The application needs to restart to apply changes. Restart now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                # Accept dialog
+                self.accept()
+                
+                # Restart application
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
+            else:
+                QMessageBox.information(
+                    self, 
+                    "Restart Required", 
+                    "You'll need to restart the application manually for changes to take effect."
+                )
+                self.accept()
         else:
             QMessageBox.warning(self, "Error", "Failed to save configuration.")
 

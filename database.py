@@ -797,17 +797,30 @@ class Database:
     
     def update_patient(self, patient):
         """Update an existing patient."""
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "UPDATE patients SET first_name = ?, last_name = ?, date_of_birth = ?, user_id = ? WHERE id = ?",
-                (patient.first_name, patient.last_name, patient.date_of_birth, patient.user_id, patient.id)
-            )
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Error updating patient: {e}")
-            return False
+        if self.mode == "remote":
+            try:
+                response = self.api_client.update_patient(patient)
+                return response.get('success', False)
+            except Exception as e:
+                print(f"API error updating patient: {e}")
+                return False
+        else:
+            try:
+                # Ensure database connection is active
+                if not self.check_connection():
+                    print("Error: Could not establish database connection")
+                    return False
+                
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "UPDATE patients SET first_name = ?, last_name = ?, date_of_birth = ?, user_id = ? WHERE id = ?",
+                    (patient.first_name, patient.last_name, patient.date_of_birth, patient.user_id, patient.id)
+                )
+                self.conn.commit()
+                return True
+            except sqlite3.Error as e:
+                print(f"Error updating patient: {e}")
+                return False
     
     def delete_patient(self, patient_id):
         """Delete a patient and all associated programs and tasks."""
@@ -1699,7 +1712,6 @@ class Database:
                 # Set granted_at if it exists in the row
                 if 'granted_at' in row.keys():
                     access.granted_at = row['granted_at']
-                
                 return access
             return None
         except sqlite3.Error as e:

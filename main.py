@@ -11,7 +11,7 @@ from PyQt5.QtGui import QFont, QIcon
 from database import Database
 from models import Patient, Program, Task, User, SharedAccess, AuditLog
 from kanban_board import KanbanBoard
-from login_dialog import LoginDialog, UserProfileDialog
+from login_dialog import LoginDialog, UserProfileDialog, ConfigDialog
 from security import hash_password, verify_password, is_strong_password, PermissionManager, sanitize_data_for_logs
 from admin_panel import AdminPanel
 from share_access_dialog import ShareAccessDialog
@@ -169,6 +169,13 @@ class MedicalPatientManager(QMainWindow):
         logout_action = QAction("Logout", self)
         logout_action.triggered.connect(self.logout)
         file_menu.addAction(logout_action)
+        
+        file_menu.addSeparator()
+        
+        # Configuration action
+        config_action = QAction("Configuration", self)
+        config_action.triggered.connect(self.showConfigDialog)
+        file_menu.addAction(config_action)
         
         file_menu.addSeparator()
         
@@ -780,6 +787,12 @@ class MedicalPatientManager(QMainWindow):
         dialog = UserProfileDialog(self.db, self.current_user, self)
         if dialog.exec_() == QDialog.Accepted:
             self.updateUserDisplay()
+    
+    def showConfigDialog(self):
+        """Show the configuration dialog."""
+        from login_dialog import ConfigDialog
+        dialog = ConfigDialog(self)
+        dialog.exec_()
     
     def sharePatient(self):
         """Show the dialog to share patient access."""
