@@ -17,10 +17,11 @@ class Patient:
 class Program:
     """Model class for patient programs (e.g., diabetes management, CKD management)."""
     
-    def __init__(self, name="", patient_id=None, id=None):
+    def __init__(self, name="", patient_id=None, id=None, created_at=None):
         self.id = id
         self.name = name
         self.patient_id = patient_id
+        self.created_at = created_at
     
     def __str__(self):
         return self.name
@@ -48,13 +49,14 @@ class User:
     ROLE_PROVIDER = "provider"
     ROLE_ASSISTANT = "assistant"
     
-    def __init__(self, username="", password="", name="", email="", role=None, id=None):
+    def __init__(self, username="", password_hash="", name="", email="", role=None, id=None, created_at=None):
         self.id = id
         self.username = username
-        self.password = password  # This will be hashed
+        self.password_hash = password_hash  # This is the hashed password
         self.name = name
         self.email = email
         self.role = role or self.ROLE_PROVIDER  # Default to provider role
+        self.created_at = created_at
     
     def is_admin(self):
         """Check if user has admin role."""

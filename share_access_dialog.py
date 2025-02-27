@@ -116,50 +116,59 @@ class ShareAccessDialog(QDialog):
     
     def loadSharedUsers(self):
         """Load users that already have shared access to this patient."""
-        self.shared_table.setRowCount(0)
-        
-        shared_access_list = self.db.get_shared_access_for_patient(self.patient.id)
-        self.shared_table.setRowCount(len(shared_access_list))
-        
-        for i, access in enumerate(shared_access_list):
-            user = self.db.get_user_by_id(access.user_id)
-            if not user:
-                continue
+        try:
+            self.shared_table.setRowCount(0)
+            
+            shared_access_list = self.db.get_shared_access_for_patient(self.patient.id)
+            self.shared_table.setRowCount(len(shared_access_list))
+            
+            for i, access in enumerate(shared_access_list):
+                try:
+                    user = self.db.get_user_by_id(access.user_id)
+                    if not user:
+                        print(f"Warning: User {access.user_id} not found for shared access")
+                        continue
+                except Exception as e:
+                    print(f"Error retrieving user {access.user_id}: {e}")
+                    continue
+                    
+                # User name
+                user_name = f"{user.name} ({user.username})" if user.name else user.username
+                name_item = QTableWidgetItem(user_name)
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+                self.shared_table.setItem(i, 0, name_item)
                 
-            # User name
-            user_name = f"{user.name} ({user.username})" if user.name else user.username
-            name_item = QTableWidgetItem(user_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.shared_table.setItem(i, 0, name_item)
-            
-            # User role
-            role_item = QTableWidgetItem(user.role)
-            role_item.setFlags(role_item.flags() & ~Qt.ItemIsEditable)
-            self.shared_table.setItem(i, 1, role_item)
-            
-            # Access level
-            access_item = QTableWidgetItem(access.access_level)
-            access_item.setFlags(access_item.flags() & ~Qt.ItemIsEditable)
-            self.shared_table.setItem(i, 2, access_item)
-            
-            # Actions - Edit/Revoke buttons
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout()
-            actions_layout.setContentsMargins(2, 2, 2, 2)
-            actions_layout.setSpacing(2)
-            
-            edit_button = QPushButton("Edit")
-            edit_button.setMaximumWidth(60)
-            edit_button.clicked.connect(lambda checked, a=access: self.editAccess(a))
-            actions_layout.addWidget(edit_button)
-            
-            revoke_button = QPushButton("Revoke")
-            revoke_button.setMaximumWidth(60)
-            revoke_button.clicked.connect(lambda checked, a=access: self.revokeAccess(a))
-            actions_layout.addWidget(revoke_button)
-            
-            actions_widget.setLayout(actions_layout)
-            self.shared_table.setCellWidget(i, 3, actions_widget)
+                # User role
+                role_item = QTableWidgetItem(user.role)
+                role_item.setFlags(role_item.flags() & ~Qt.ItemIsEditable)
+                self.shared_table.setItem(i, 1, role_item)
+                
+                # Access level
+                access_item = QTableWidgetItem(access.access_level)
+                access_item.setFlags(access_item.flags() & ~Qt.ItemIsEditable)
+                self.shared_table.setItem(i, 2, access_item)
+                
+                # Actions - Edit/Revoke buttons
+                actions_widget = QWidget()
+                actions_layout = QHBoxLayout()
+                actions_layout.setContentsMargins(2, 2, 2, 2)
+                actions_layout.setSpacing(2)
+                
+                edit_button = QPushButton("Edit")
+                edit_button.setMaximumWidth(60)
+                edit_button.clicked.connect(lambda checked, a=access: self.editAccess(a))
+                actions_layout.addWidget(edit_button)
+                
+                revoke_button = QPushButton("Revoke")
+                revoke_button.setMaximumWidth(60)
+                revoke_button.clicked.connect(lambda checked, a=access: self.revokeAccess(a))
+                actions_layout.addWidget(revoke_button)
+                
+                actions_widget.setLayout(actions_layout)
+                self.shared_table.setCellWidget(i, 3, actions_widget)
+        except Exception as e:
+            print(f"Error loading shared users: {e}")
+            QMessageBox.critical(self, "Error", f"Error loading shared users: {e}")
     
     def shareAccess(self):
         """Share access to the patient with a selected user."""

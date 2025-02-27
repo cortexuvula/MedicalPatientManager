@@ -1,13 +1,103 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QPushButton, QLabel, QMessageBox, QHBoxLayout,
-                             QCheckBox, QTabWidget, QWidget, QComboBox)
+                             QCheckBox, QTabWidget, QWidget, QComboBox, QGroupBox, QRadioButton, QGridLayout)
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont
 
 from models import User
 from security import hash_password, verify_password, is_strong_password, LoginAttemptTracker
 
 # Track login attempts
 login_tracker = LoginAttemptTracker()
+
+class ConfigDialog(QDialog):
+    """Dialog for configuring application settings."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Application Configuration")
+        self.setMinimumWidth(400)
+        
+        # Load current config
+        from config import Config
+        self.config = Config.get_config()
+        
+        # Create UI
+        self.initUI()
+    
+    def initUI(self):
+        """Initialize the UI components."""
+        layout = QVBoxLayout()
+        
+        # Mode selection
+        mode_group = QGroupBox("Database Mode")
+        mode_layout = QVBoxLayout()
+        
+        self.local_radio = QRadioButton("Local Mode (database on this computer)")
+        self.remote_radio = QRadioButton("Remote Mode (connect to server)")
+        
+        if self.config.get("mode") == "remote":
+            self.remote_radio.setChecked(True)
+        else:
+            self.local_radio.setChecked(True)
+        
+        mode_layout.addWidget(self.local_radio)
+        mode_layout.addWidget(self.remote_radio)
+        mode_group.setLayout(mode_layout)
+        layout.addWidget(mode_group)
+        
+        # Remote URL
+        remote_group = QGroupBox("Remote Server Settings")
+        remote_layout = QFormLayout()
+        
+        self.remote_url = QLineEdit(self.config.get("remote_url", "http://localhost:5000/api"))
+        remote_layout.addRow("Server URL:", self.remote_url)
+        
+        remote_group.setLayout(remote_layout)
+        layout.addWidget(remote_group)
+        
+        # Database file
+        db_group = QGroupBox("Local Database Settings")
+        db_layout = QFormLayout()
+        
+        self.db_file = QLineEdit(self.config.get("db_file", "patient_manager.db"))
+        db_layout.addRow("Database File:", self.db_file)
+        
+        db_group.setLayout(db_layout)
+        layout.addWidget(db_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_button = QPushButton("Save")
+        cancel_button = QPushButton("Cancel")
+        
+        save_button.clicked.connect(self.save_config)
+        cancel_button.clicked.connect(self.reject)
+        
+        button_layout.addWidget(save_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def save_config(self):
+        """Save the configuration."""
+        from config import Config
+        
+        # Update config object
+        config = {
+            "mode": "remote" if self.remote_radio.isChecked() else "local",
+            "remote_url": self.remote_url.text(),
+            "db_file": self.db_file.text()
+        }
+        
+        # Save to file
+        if Config.update_config(config):
+            QMessageBox.information(self, "Success", "Configuration saved successfully. Please restart the application for changes to take effect.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", "Failed to save configuration.")
+
 
 class LoginDialog(QDialog):
     """Dialog for user login."""
@@ -114,6 +204,11 @@ class LoginDialog(QDialog):
         # Add register tab
         self.tab_widget.addTab(register_widget, "Register")
         
+        # Configuration button
+        config_button = QPushButton("Configuration")
+        config_button.clicked.connect(self.open_config_dialog)
+        main_layout.addWidget(config_button)
+    
     def login(self):
         """Handle login button click."""
         username = self.login_username.text()
@@ -130,10 +225,59 @@ class LoginDialog(QDialog):
                                f"Too many failed login attempts. Please try again in {remaining_time} minutes.")
             return
         
-        # Get user from database
+        # Get user from database and check configuration mode
+        from config import Config
+        config = Config.get_config()
+        mode = config.get("mode", "local")
+        
+        print(f"Login attempt for {username} in {mode} mode")
+        
+        if mode == "remote":
+            # For remote mode, use API client directly
+            try:
+                from api_client import ApiClient
+                api_client = ApiClient()
+                print(f"API client base URL: {api_client.base_url}")
+                
+                # Try to authenticate via API
+                login_response = api_client.login(username, password)
+                print(f"API login response: {login_response}")
+                
+                if login_response.get('success'):
+                    # Authentication successful through API
+                    login_tracker.record_attempt(username, True)
+                    
+                    # Create user object from API response
+                    user_data = login_response.get('user', {})
+                    user = User(
+                        id=user_data.get('id', 0),
+                        username=username,
+                        password_hash="",  # Don't store password
+                        name=user_data.get('name', ''),
+                        email=user_data.get('email', ''),
+                        role=user_data.get('role', 'provider')
+                    )
+                    
+                    # Emit signal and close dialog
+                    self.userAuthenticated.emit(user)
+                    self.accept()
+                    return
+                else:
+                    # Authentication failed through API
+                    error_msg = login_response.get('error', 'Invalid username or password')
+                    print(f"API login failed: {error_msg}")
+                    login_tracker.record_attempt(username, False)
+                    QMessageBox.warning(self, "Login Failed", error_msg)
+                    return
+            except Exception as e:
+                print(f"API login error: {e}")
+                QMessageBox.warning(self, "Login Error", f"API connection error: {str(e)}")
+                return
+        
+        # For local mode or if remote authentication failed
         user = self.db.get_user_by_username(username)
         
-        if user and verify_password(password, user.password):
+        if user and verify_password(password, user.password_hash):
             # Authentication successful - record successful attempt
             login_tracker.record_attempt(username, True)
             
@@ -177,11 +321,17 @@ class LoginDialog(QDialog):
             
         # Create and store the new user
         hashed_password = hash_password(password)
-        user = User(username=username, password=hashed_password, name=name, email=email, role=role)
+        user = User(username=username, password_hash=hashed_password, name=name, email=email, role=role)
         self.db.add_user(user)
         
         QMessageBox.information(self, "Registration Successful", "Your account has been created! You can now log in.")
         self.tab_widget.setCurrentIndex(0)  # Switch to login tab
+    
+    def open_config_dialog(self):
+        """Open the configuration dialog."""
+        dialog = ConfigDialog(self)
+        dialog.exec_()
+
 
 class UserProfileDialog(QDialog):
     """Dialog for viewing and editing user profile."""

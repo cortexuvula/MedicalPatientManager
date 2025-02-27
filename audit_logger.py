@@ -59,6 +59,11 @@ class AuditLogger:
         # Mask any sensitive information in the details
         masked_details = self._mask_sensitive_data(details)
         
+        # Check if we're in remote mode - if so, just log to console
+        if hasattr(self.db, 'mode') and self.db.mode == "remote":
+            print(f"REMOTE MODE AUDIT LOG: user_id={user_id}, action={action}, entity_type={entity_type}")
+            return 0  # Return dummy ID
+            
         # Log to database
         log_id = self.db.add_audit_log(
             user_id=user_id,
@@ -214,6 +219,28 @@ class AuditLogger:
             entity_id=entity_id,
             start_date=start_date,
             end_date=end_date,
+            limit=limit,
+            offset=offset
+        )
+    
+    def get_user_activity(self, user_id, limit=100, offset=0):
+        """Get recent activity for a specific user.
+        
+        Args:
+            user_id: ID of the user to get activity for
+            limit: Maximum number of logs to retrieve
+            offset: Offset for pagination
+            
+        Returns:
+            list: List of AuditLog objects for the user
+        """
+        # Check if we're in remote mode
+        if hasattr(self.db, 'mode') and self.db.mode == "remote":
+            print(f"REMOTE MODE: User activity logs not available in remote mode for user {user_id}")
+            return []
+            
+        return self.db.get_audit_logs(
+            user_id=user_id,
             limit=limit,
             offset=offset
         )

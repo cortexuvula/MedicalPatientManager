@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QScrollArea, QFrame, QInputDialog,
-                             QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox)
+                             QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox,
+                             QTabWidget)
 from PyQt5.QtCore import Qt, QMimeData, pyqtSignal
 from PyQt5.QtGui import QDrag, QFont
 
@@ -357,7 +358,10 @@ class KanbanBoard(QWidget):
                                      "Program Name:", text=self.program.name)
         if ok and name:
             self.program.name = name
-            self.db.update_program(self.program)
+            # Update the program in the database
+            if not self.db.update_program(self.program):
+                QMessageBox.warning(self, "Error", "Failed to update program in database")
+                return
             
             # Update the tab text
             parent = self.parent()

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Patient Manager - Network Configuration</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-top: 0;
+        }
+        h2 {
+            color: #3498db;
+        }
+        code {
+            background-color: #f8f8f8;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        input[type="text"] {
+            padding: 8px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Medical Patient Manager</h1>
+        <h2>Network Configuration</h2>
+        
+        <div class="form-group">
+            <label for="server-url">Server URL:</label>
+            <input type="text" id="server-url" placeholder="http://192.168.1.97:5000/api" value="http://192.168.1.97:5000/api">
+        </div>
+        
+        <div class="form-group">
+            <button onclick="testConnection()">Test Connection</button>
+        </div>
+        
+        <div id="connection-status"></div>
+        
+        <h2>Configuration Instructions</h2>
+        <p>To connect to the Medical Patient Manager server:</p>
+        <ol>
+            <li>Enter the server URL in the field above</li>
+            <li>Click "Test Connection" to verify connectivity</li>
+            <li>If successful, note this URL for your client configuration</li>
+            <li>On your client PC, launch the Medical Patient Manager application</li>
+            <li>Click "Configuration" on the login screen</li>
+            <li>Select "Remote Mode" and enter this server URL</li>
+            <li>Save the configuration and restart the application</li>
+        </ol>
+        
+        <h2>Login Test</h2>
+        <div class="form-group">
+            <label for="username">Username:</label>
+            <input type="text" id="username" placeholder="Username">
+        </div>
+        <div class="form-group">
+            <label for="password">Password:</label>
+            <input type="password" id="password" placeholder="Password">
+        </div>
+        <div class="form-group">
+            <button onclick="testLogin()">Test Login</button>
+        </div>
+        
+        <div id="login-status"></div>
+    </div>
+    
+    <script>
+        function testConnection() {
+            const serverUrl = document.getElementById('server-url').value;
+            const statusDiv = document.getElementById('connection-status');
+            
+            statusDiv.innerHTML = '<div class="status warning">Testing connection...</div>';
+            
+            fetch(serverUrl)
+                .then(response => {
+                    if (response.ok) {
+                        return response.json();
+                    }
+                    throw new Error(`Server returned ${response.status} ${response.statusText}`);
+                })
+                .then(data => {
+                    statusDiv.innerHTML = `
+                        <div class="status success">
+                            <h3>Connection Successful!</h3>
+                            <p>Connected to: ${data.name} v${data.version}</p>
+                            <p>Available endpoints: ${data.endpoints.length}</p>
+                        </div>
+                    `;
+                })
+                .catch(error => {
+                    statusDiv.innerHTML = `
+                        <div class="status error">
+                            <h3>Connection Failed</h3>
+                            <p>${error.message}</p>
+                            <p>Please check the server URL and ensure the server is running.</p>
+                        </div>
+                    `;
+                });
+        }
+        
+        function testLogin() {
+            const serverUrl = document.getElementById('server-url').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const statusDiv = document.getElementById('login-status');
+            
+            if (!username || !password) {
+                statusDiv.innerHTML = '<div class="status error">Please enter both username and password</div>';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<div class="status warning">Testing login...</div>';
+            
+            // Build login URL (append /login if needed)
+            let loginUrl = serverUrl;
+            if (!loginUrl.endsWith('/login')) {
+                loginUrl = loginUrl.endsWith('/') ? `${loginUrl}login` : `${loginUrl}/login`;
+            }
+            
+            fetch(loginUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    statusDiv.innerHTML = `
+                        <div class="status success">
+                            <h3>Login Successful!</h3>
+                            <p>Welcome, ${data.user.name || data.user.username}!</p>
+                            <p>Your credentials are working correctly.</p>
+                        </div>
+                    `;
+                } else {
+                    statusDiv.innerHTML = `
+                        <div class="status error">
+                            <h3>Login Failed</h3>
+                            <p>${data.error || 'Invalid username or password'}</p>
+                        </div>
+                    `;
+                }
+            })
+            .catch(error => {
+                statusDiv.innerHTML = `
+                    <div class="status error">
+                        <h3>Login Error</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            });
+        }
+        
+        // Test connection on page load
+        window.onload = function() {
+            testConnection();
+        };
+    </script>
+</body>
+</html>

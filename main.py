@@ -16,7 +16,7 @@ from security import hash_password, verify_password, is_strong_password, Permiss
 from admin_panel import AdminPanel
 from share_access_dialog import ShareAccessDialog
 from audit_log_viewer import AuditLogViewer
-from audit_logger import AuditLogger
+from safe_audit_logger import SafeAuditLogger
 from session_manager import SessionManager
 
 
@@ -31,7 +31,7 @@ class MedicalPatientManager(QMainWindow):
         self.current_program = None
         
         # Initialize the audit logger
-        self.audit_logger = AuditLogger(self.db)
+        self.audit_logger = SafeAuditLogger(self.db)
         
         # Initialize the session manager
         self.session_manager = SessionManager()
@@ -237,12 +237,15 @@ class MedicalPatientManager(QMainWindow):
         # Create a session
         session_id = self.session_manager.create_session(user.id)
         
-        # Log successful login
-        self.audit_logger.log_login(
-            user_id=user.id,
-            success=True,
-            details=f"User logged in from application"
-        )
+        # Log successful login - with error handling
+        try:
+            self.audit_logger.log_login(
+                user_id=user.id,
+                success=True,
+                details=f"User logged in from application"
+            )
+        except Exception as e:
+            print(f"Warning: Could not log login event: {e}")
         
         # Update UI
         self.updateUserDisplay()
@@ -268,10 +271,13 @@ class MedicalPatientManager(QMainWindow):
         # End all user sessions
         self.session_manager.end_all_user_sessions(self.current_user.id)
         
-        # Log logout
-        self.audit_logger.log_logout(
-            user_id=self.current_user.id
-        )
+        # Log logout with error handling
+        try:
+            self.audit_logger.log_logout(
+                user_id=self.current_user.id
+            )
+        except Exception as e:
+            print(f"Warning: Could not log logout event: {e}")
         
         # Clear settings
         self.settings.remove("username")
