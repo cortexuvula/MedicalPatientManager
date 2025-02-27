@@ -18,14 +18,14 @@ class Database:
     def __init__(self, db_file=None):
         """Initialize database connection and create tables if they don't exist."""
         # Load configuration
-        config = Config.get_config()
-        self.mode = config.get("mode", "local")
+        self.config = Config.load_config()
+        self.mode = self.config.get("mode", "local")
         
         # Set database file
         if db_file:
             self.db_file = db_file
         else:
-            self.db_file = config.get("db_file", "patient_manager.db")
+            self.db_file = self.config.get("db_file", "patient_manager.db")
         
         self.conn = None
         self.api_client = None
@@ -35,7 +35,7 @@ class Database:
             self._create_tables()
         else:
             # Remote mode
-            self.remote_url = config.get("remote_url")
+            self.remote_url = self.config.get("remote_url")
             self.api_client = ApiClient()
     
     def _connect(self):
@@ -1954,6 +1954,10 @@ class Database:
             except Exception as e:
                 print(f"API authentication error: {e}")
                 return None
+    
+    def get_config(self):
+        """Expose the configuration in the Database class"""
+        return self.config
     
     def __del__(self):
         """Close the database connection when the object is destroyed."""

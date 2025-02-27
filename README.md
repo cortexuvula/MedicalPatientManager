@@ -11,6 +11,8 @@ A Python application for managing multiple medical patients and their associated
 - **Data Persistence**: Choose between local or remote data storage
 - **Configuration**: Simple UI for switching between local and remote modes
 - **Multi-User Support**: When in remote mode, multiple users can access the system simultaneously
+- **Customizable UI**: Personalize Kanban board with custom column titles and add up to 5 columns
+- **Flexible Workflow**: Rearrange Kanban columns to match your workflow
 
 ## Installation
 
@@ -50,6 +52,11 @@ To configure the application:
 2. Select a patient to view their programs
 3. Add programs to a patient's profile
 4. Use the Kanban board to track progress within each program
+5. Customize Kanban columns by clicking the "Customize Columns" button:
+   - Edit existing column titles
+   - Add new columns (up to 5 total columns)
+   - Remove columns (minimum 3 columns required)
+   - Rearrange columns using the up/down arrows
 
 ## Server Setup
 

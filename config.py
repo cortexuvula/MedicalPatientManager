@@ -7,7 +7,12 @@ class Config:
     DEFAULT_CONFIG = {
         "mode": "local",  # 'local' or 'remote'
         "remote_url": "http://localhost:5000/api",
-        "db_file": "patient_manager.db"
+        "db_file": "patient_manager.db",
+        "kanban_columns": [
+            {"id": "todo", "title": "To Do"},
+            {"id": "in_progress", "title": "In Progress"},
+            {"id": "done", "title": "Done"}
+        ]
     }
     
     CONFIG_FILE = "config.json"
