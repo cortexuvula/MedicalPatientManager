@@ -1,13 +1,13 @@
 import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QListWidget, QPushButton, QLabel, 
-                             QInputDialog, QMessageBox, QTabWidget, QSplitter,
-                             QFrame, QLineEdit, QAction, QMenu, QDialog, QTreeWidget,
-                             QTreeWidgetItem)
-from PyQt5.QtCore import Qt, QSize, QSettings
-from PyQt5.QtGui import QFont, QIcon
-
+                             QHBoxLayout, QLabel, QPushButton, QTreeWidget, 
+                             QTreeWidgetItem, QTabWidget, QDialog, QLineEdit,
+                             QMessageBox, QFileDialog, QSplitter, QInputDialog,
+                             QComboBox, QTextEdit, QFormLayout, QDialogButtonBox, 
+                             QDateEdit, QScrollArea, QAction, QMenu)
+from PyQt5.QtCore import Qt, QDateTime, QDate, QSettings
+from PyQt5.QtGui import QFont, QIcon, QPixmap
 from database import Database
 from models import Patient, Program, Task, User, SharedAccess, AuditLog
 from kanban_board import KanbanBoard
@@ -18,6 +18,7 @@ from share_access_dialog import ShareAccessDialog
 from audit_log_viewer import AuditLogViewer
 from safe_audit_logger import SafeAuditLogger
 from session_manager import SessionManager
+from preferences_dialog import PreferencesDialog
 
 
 class MedicalPatientManager(QMainWindow):
@@ -78,13 +79,46 @@ class MedicalPatientManager(QMainWindow):
         
         # Patient buttons
         patient_buttons = QHBoxLayout()
-        self.add_patient_btn = QPushButton("Add Patient")
+        
+        # Define button style
+        button_min_width = 70  # Ensure all buttons have enough width
+        button_style = """
+            QPushButton {
+                padding: 5px;
+                min-height: 25px;
+            }
+        """
+        
+        # Add Patient button with plus icon
+        self.add_patient_btn = QPushButton("Add")
+        self.add_patient_btn.setIcon(QIcon.fromTheme("list-add", QIcon()))  # Use default icon if available
+        self.add_patient_btn.setToolTip("Add a new patient")
+        self.add_patient_btn.setMinimumWidth(button_min_width)
+        self.add_patient_btn.setStyleSheet(button_style)
         self.add_patient_btn.clicked.connect(self.addPatient)
+        
+        # Edit button
         self.edit_patient_btn = QPushButton("Edit")
+        self.edit_patient_btn.setIcon(QIcon.fromTheme("document-edit", QIcon()))
+        self.edit_patient_btn.setToolTip("Edit selected patient")
+        self.edit_patient_btn.setMinimumWidth(button_min_width)
+        self.edit_patient_btn.setStyleSheet(button_style)
         self.edit_patient_btn.clicked.connect(self.editPatient)
+        
+        # Delete button
         self.delete_patient_btn = QPushButton("Delete")
+        self.delete_patient_btn.setIcon(QIcon.fromTheme("edit-delete", QIcon()))
+        self.delete_patient_btn.setToolTip("Delete selected patient")
+        self.delete_patient_btn.setMinimumWidth(button_min_width)
+        self.delete_patient_btn.setStyleSheet(button_style)
         self.delete_patient_btn.clicked.connect(self.deletePatient)
+        
+        # Share button
         self.share_patient_btn = QPushButton("Share")
+        self.share_patient_btn.setIcon(QIcon.fromTheme("document-share", QIcon()))
+        self.share_patient_btn.setToolTip("Share access to selected patient")
+        self.share_patient_btn.setMinimumWidth(button_min_width)
+        self.share_patient_btn.setStyleSheet(button_style)
         self.share_patient_btn.clicked.connect(self.sharePatient)
         
         patient_buttons.addWidget(self.add_patient_btn)
@@ -176,6 +210,11 @@ class MedicalPatientManager(QMainWindow):
         config_action = QAction("Configuration", self)
         config_action.triggered.connect(self.showConfigDialog)
         file_menu.addAction(config_action)
+        
+        # Preferences action
+        preferences_action = QAction("Preferences", self)
+        preferences_action.triggered.connect(self.showPreferencesDialog)
+        file_menu.addAction(preferences_action)
         
         file_menu.addSeparator()
         
@@ -479,7 +518,7 @@ class MedicalPatientManager(QMainWindow):
                     
                     # Update patient info if this patient is currently selected
                     if self.selected_patient_id == patient_id:
-                        self.patient_info.setText(f"{patient.first_name} {patient.last_name} - DOB: {patient.date_of_birth}")
+                        self.patient_info.setText(f"{patient.first_name} {patient.last_name}")
                     
                     # Log the action
                     self.audit_logger.log_data_modification(
@@ -792,6 +831,11 @@ class MedicalPatientManager(QMainWindow):
         """Show the configuration dialog."""
         from login_dialog import ConfigDialog
         dialog = ConfigDialog(self)
+        dialog.exec_()
+    
+    def showPreferencesDialog(self):
+        """Show the preferences dialog."""
+        dialog = PreferencesDialog(self)
         dialog.exec_()
     
     def sharePatient(self):

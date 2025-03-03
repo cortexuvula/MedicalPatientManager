@@ -2,18 +2,23 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QFrame, QInputDialog,
                              QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox,
                              QTabWidget, QApplication, QDialogButtonBox)
-from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint
+from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QTimer, QSettings
 from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor
 
-from models import Task
+from models import Task, Program
 
 
 class TaskWidget(QFrame):
     """Widget representing a task in the Kanban board."""
     
+    # Add signals for edit and delete
+    edit_clicked = pyqtSignal(object)  # Signal when edit button is clicked (with task object)
+    delete_clicked = pyqtSignal(object)  # Signal when delete button is clicked (with task object)
+    
     def __init__(self, task, parent=None):
         super().__init__(parent)
         self.task = task
+        self.task_version = task.version  # Store the current task version
         self.initUI()
     
     def initUI(self):
@@ -43,11 +48,11 @@ class TaskWidget(QFrame):
         
         self.edit_btn = QPushButton("Edit")
         self.edit_btn.setFixedWidth(60)
-        self.edit_btn.clicked.connect(self.editTask)
+        self.edit_btn.clicked.connect(self._on_edit_clicked)
         
         self.delete_btn = QPushButton("Delete")
         self.delete_btn.setFixedWidth(60)
-        self.delete_btn.clicked.connect(self.deleteTask)
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
         
         action_layout.addWidget(self.edit_btn)
         action_layout.addWidget(self.delete_btn)
@@ -114,53 +119,76 @@ class TaskWidget(QFrame):
     
     def dropEvent(self, event):
         mime_data = event.mimeData()
-        if mime_data.hasText() and ":task" in mime_data.text():
-            dragged_task_id = int(mime_data.text().split(":", 1)[0])
-            
-            # Don't process if dropped on itself
-            if dragged_task_id == self.task.id:
-                event.acceptProposedAction()
-                return
-            
-            # Find the parent KanbanColumn
-            parent = self.parent()
-            while parent and not isinstance(parent, KanbanColumn):
-                parent = parent.parent()
-            
-            if parent:
-                # Find the position of this task in the column
-                tasks_layout = parent.tasks_layout
-                for i in range(tasks_layout.count()):
-                    if tasks_layout.itemAt(i).widget() == self:
-                        # Determine whether to insert above or below this task
-                        drop_y = event.pos().y()
-                        if drop_y < self.height() / 2:
-                            # Drop above this task
-                            parent.taskReordered.emit(dragged_task_id, i)
-                        else:
-                            # Drop below this task
-                            parent.taskReordered.emit(dragged_task_id, i + 1)
+        if mime_data.hasText():
+            text = mime_data.text()
+            if text.startswith("kanban_column:"):
+                # Extract dragged column ID
+                dragged_column_id = text.split(":", 1)[1]
+                # Let the parent handle column reordering
+                parent = self.parent()
+                if parent:
+                    # Find the index of this column
+                    for i, column in enumerate(parent.findChildren(KanbanColumn)):
+                        if column == self:
+                            # Emit signal to reorder columns
+                            self.columnMoved.emit(dragged_column_id, i)
+                            break
+            elif ":task" in text:
+                # Extract task ID
+                task_id = int(text.split(":", 1)[0])
+                
+                # If dropped directly on the column (not on a task)
+                # Find the nearest task based on drop position
+                drop_position = event.pos().y()
+                insert_index = 0  # Default to top position
+                
+                # Find the index where the task should be inserted
+                for i in range(self.tasks_layout.count()):
+                    item = self.tasks_layout.itemAt(i)
+                    if item and item.widget() and isinstance(item.widget(), TaskWidget):
+                        widget = item.widget()
+                        widget_pos = widget.mapTo(self, QPoint(0, 0)).y()
+                        widget_height = widget.height()
+                        widget_center = widget_pos + widget_height / 2
+                        
+                        if drop_position < widget_center:
+                            # Found the position - drop before this widget
+                            break
+                        insert_index = i + 1
+                
+                # Handle the drop - either status change or reordering
+                source_task = None
+                for column in self.parent().findChildren(KanbanColumn):
+                    for i in range(column.tasks_layout.count()):
+                        item = column.tasks_layout.itemAt(i)
+                        if item and item.widget() and isinstance(item.widget(), TaskWidget):
+                            task_widget = item.widget()
+                            if task_widget.task.id == task_id:
+                                source_task = task_widget.task
+                                break
+                    if source_task:
                         break
-            
-            event.acceptProposedAction()
-    
-    def editTask(self):
-        # Find the parent KanbanColumn
-        parent = self.parent()
-        while parent and not isinstance(parent, KanbanBoard):
-            parent = parent.parent()
+                
+                if source_task and source_task.status != self.status:
+                    # Status change (moved to different column)
+                    self.taskDropped.emit(task_id, self.status)
+                else:
+                    # Reordering within the same column
+                    self.taskReordered.emit(task_id, insert_index)
+            else:
+                # Legacy support for old format (just task ID)
+                task_id = int(text)
+                self.taskDropped.emit(task_id, self.status)
         
-        if parent:
-            parent.editTask(self.task)
+        event.acceptProposedAction()
     
-    def deleteTask(self):
-        # Find the parent KanbanColumn
-        parent = self.parent()
-        while parent and not isinstance(parent, KanbanBoard):
-            parent = parent.parent()
-        
-        if parent:
-            parent.deleteTask(self.task)
+    def _on_edit_clicked(self):
+        """Emit signal when edit button is clicked."""
+        self.edit_clicked.emit(self.task)
+    
+    def _on_delete_clicked(self):
+        """Emit signal when delete button is clicked."""
+        self.delete_clicked.emit(self.task)
 
 
 class KanbanColumn(QWidget):
@@ -168,15 +196,20 @@ class KanbanColumn(QWidget):
     taskDropped = pyqtSignal(int, str)  # Task ID, new status
     columnMoved = pyqtSignal(str, int)  # Column ID, new position
     taskReordered = pyqtSignal(int, int)  # Task ID, new position
+    taskDoubleClicked = pyqtSignal(object)  # Signals when a task is double-clicked (task_object)
+    taskAdded = pyqtSignal(str)  # Signal to add a task to this status
     
-    def __init__(self, title, status, parent=None):
+    def __init__(self, status, title, parent=None):
         super().__init__(parent)
         self.title = title
-        self.status = status
+        self.status = status  # The status this column represents (todo, in_progress, etc.)
+        self.setAcceptDrops(True)
+        
+        # We'll implement our own drag functionality
+        
         self.initUI()
     
     def initUI(self):
-        self.setAcceptDrops(True)
         layout = QVBoxLayout()
         self.setLayout(layout)
         
@@ -230,7 +263,7 @@ class KanbanColumn(QWidget):
             }
             
             QPushButton {
-                background-color: #e0e0e0;
+                background-color: #e0f0f0;
                 border: 1px solid #cccccc;
                 border-radius: 3px;
                 padding: 5px;
@@ -328,24 +361,28 @@ class KanbanColumn(QWidget):
                 
                 # Find the index where the task should be inserted
                 for i in range(self.tasks_layout.count()):
-                    widget = self.tasks_layout.itemAt(i).widget()
-                    widget_pos = widget.mapTo(self, QPoint(0, 0)).y()
-                    widget_height = widget.height()
-                    widget_center = widget_pos + widget_height / 2
-                    
-                    if drop_position < widget_center:
-                        # Found the position - drop before this widget
-                        break
-                    insert_index = i + 1
+                    item = self.tasks_layout.itemAt(i)
+                    if item and item.widget() and isinstance(item.widget(), TaskWidget):
+                        widget = item.widget()
+                        widget_pos = widget.mapTo(self, QPoint(0, 0)).y()
+                        widget_height = widget.height()
+                        widget_center = widget_pos + widget_height / 2
+                        
+                        if drop_position < widget_center:
+                            # Found the position - drop before this widget
+                            break
+                        insert_index = i + 1
                 
                 # Handle the drop - either status change or reordering
                 source_task = None
                 for column in self.parent().findChildren(KanbanColumn):
                     for i in range(column.tasks_layout.count()):
-                        task_widget = column.tasks_layout.itemAt(i).widget()
-                        if task_widget and task_widget.task.id == task_id:
-                            source_task = task_widget.task
-                            break
+                        item = column.tasks_layout.itemAt(i)
+                        if item and item.widget() and isinstance(item.widget(), TaskWidget):
+                            task_widget = item.widget()
+                            if task_widget.task.id == task_id:
+                                source_task = task_widget.task
+                                break
                     if source_task:
                         break
                 
@@ -362,18 +399,54 @@ class KanbanColumn(QWidget):
         
         event.acceptProposedAction()
 
+    def onTaskDoubleClicked(self, item):
+        """Handle double-click on a task item."""
+        # Get the task data stored in the item
+        task = item.data(Qt.UserRole)
+        # Emit signal with the task
+        self.taskDoubleClicked.emit(task)
+
 
 class KanbanBoard(QWidget):
     """Widget representing a Kanban board."""
     
+    refreshRequired = pyqtSignal()  # Signal to indicate a refresh is needed
+    
     def __init__(self, db, program_id, parent=None):
+        """Initialize KanbanBoard with the database and program ID."""
         super().__init__(parent)
         self.db = db
         self.program_id = program_id
-        self.program = db.get_program_by_id(program_id)
-        self.config = db.config
+        self.config = QSettings("MedicalPatientManager", "KanbanBoard")
+        
+        # Get conflict resolution mode from user settings or use default
+        self.conflict_resolution_mode = self.config.value(
+            "conflict_resolution_mode", 
+            "last_wins"
+        )
+        
+        # Get refresh interval from user settings or use default (5 seconds)
+        self.refresh_interval = int(self.config.value(
+            "refresh_interval", 
+            5000
+        ))
+        
+        # Dictionary to track task versions
+        self.task_versions = {}
+        
+        # Dictionary to store columns by ID
+        self.columns = {}  # This makes columns a dictionary
+        
+        # Setup the UI
         self.initUI()
+        
+        # Load tasks
         self.loadTasks()
+        
+        # Setup refresh timer
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.checkForUpdates)
+        self.refresh_timer.start(self.refresh_interval)
     
     def initUI(self):
         layout = QVBoxLayout()
@@ -381,7 +454,7 @@ class KanbanBoard(QWidget):
         
         # Header
         header_layout = QHBoxLayout()
-        title = QLabel(f"{self.program.name}")
+        title = QLabel(f"{self.db.get_program_by_id(self.program_id).name}")
         title.setFont(QFont("Arial", 14, QFont.Bold))
         header_layout.addWidget(title)
         
@@ -402,88 +475,153 @@ class KanbanBoard(QWidget):
         layout.addLayout(self.columns_layout)
         
         # Create columns
-        self.columns = {}
         self.createColumns()
     
     def createColumns(self):
-        """Create columns based on program-specific configuration."""
-        # Clear existing columns
-        for column in self.columns.values():
-            column.setParent(None)
-        self.columns.clear()
-        
-        # Clear layout
-        while self.columns_layout.count():
-            item = self.columns_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
-        
-        # Get program-specific column configuration
-        column_configs = self.db.get_program_kanban_config(self.program_id)
-        
-        # If no program-specific config, use default config
-        if column_configs is None:
-            # Get column configuration from global config
-            kanban_config = self.config.get("kanban_columns", [])
-            column_configs = []
+        """Create columns for the kanban board based on configuration."""
+        print("Creating kanban columns...")
+        try:
+            # First, remove the existing columns
+            for i in reversed(range(self.columns_layout.count())):
+                item = self.columns_layout.itemAt(i)
+                if item:
+                    widget = item.widget()
+                    if widget:
+                        widget.setParent(None)
             
-            # Handle old configuration format (dictionary with key-value pairs)
-            if isinstance(kanban_config, dict):
-                # Convert old format to new format
-                for column_id, column_title in kanban_config.items():
-                    column_configs.append({"id": column_id, "title": column_title})
-            # Handle new configuration format (list of objects)
-            elif isinstance(kanban_config, list):
-                column_configs = kanban_config
+            # Clear the columns dictionary
+            self.columns = {}
             
-            # If no valid configuration, use defaults
+            # Get column configuration based on current program
+            column_configs = self.db.get_program_kanban_config(self.program_id)
+            print(f"Retrieved program kanban config: {column_configs}")
+            
+            # If no program-specific config exists, use global config
+            if column_configs is None:
+                print("No program-specific config, using global config")
+                # Get column configuration from general settings
+                kanban_config = self.config.value("kanban_columns", [])
+                
+                # Handle old configuration format (dictionary with key-value pairs)
+                if isinstance(kanban_config, dict):
+                    print("Converting old dictionary config format to list")
+                    # Convert old format to new format
+                    column_configs = [{"id": column_id, "title": kanban_config[column_id]} for column_id in kanban_config]
+                # Handle new configuration format (list of objects)
+                elif isinstance(kanban_config, list):
+                    print("Using list config format")
+                    column_configs = kanban_config
+            
+            # If no valid configuration (empty list or none), use defaults
             if not column_configs:
+                print("No valid config found, using default columns")
                 column_configs = [
                     {"id": "todo", "title": "To Do"},
                     {"id": "in_progress", "title": "In Progress"},
                     {"id": "done", "title": "Done"}
                 ]
-        
-        # Create columns
-        for column_config in column_configs:
-            # Check if column_config is a dictionary or string (for compatibility)
-            if isinstance(column_config, dict):
-                column_id = column_config.get("id")
-                column_title = column_config.get("title")
-            else:
-                # Handle unexpected format by using the item as both id and title
-                column_id = str(column_config)
-                column_title = str(column_config)
             
-            column = KanbanColumn(column_title, column_id)
-            self.columns[column_id] = column
-            self.columns_layout.addWidget(column)
-            column.taskDropped.connect(self.onTaskDropped)
-            column.columnMoved.connect(self.onColumnMoved)
-            column.taskReordered.connect(self.onTaskReordered)
+            # Now create the columns
+            for config in column_configs:
+                print(f"Creating column: {config}")
+                column = KanbanColumn(title=config["title"], status=config["id"])
+                column.taskDropped.connect(self.onTaskDropped)
+                column.taskReordered.connect(self.onTaskReordered)
+                column.taskDoubleClicked.connect(self.editTask)  # Connect to taskDoubleClicked signal
+                column.taskAdded.connect(self.addTask)  # Connect to taskAdded signal
+                column.columnMoved.connect(self.onColumnMoved)
+                self.columns_layout.addWidget(column)
+                self.columns[config["id"]] = column
+                
+            print(f"Created {len(self.columns)} columns")
+            # Load tasks after creating columns
+            if hasattr(self, 'tasks'):
+                self.loadTasks()
+        except Exception as e:
+            import traceback
+            print(f"Error creating columns: {e}")
+            traceback.print_exc()
     
     def loadTasks(self):
-        """Load tasks from the database into the appropriate columns."""
-        # Clear existing tasks
-        for column in self.columns.values():
-            while column.tasks_layout.count():
-                item = column.tasks_layout.takeAt(0)
-                widget = item.widget()
-                if widget:
-                    widget.deleteLater()
-        
-        # Get tasks for this program
+        """Load tasks into columns."""
+        # Get tasks for the program
         tasks = self.db.get_tasks_by_program(self.program_id)
         
-        # Add tasks to appropriate columns
+        # Store current task versions for concurrency control
+        self.task_versions = {task.id: task.version for task in tasks}
+        
+        # Group tasks by status
+        tasks_by_status = {}
         for task in tasks:
-            task_widget = TaskWidget(task)
-            if task.status in self.columns:
-                self.columns[task.status].addTaskWidget(task_widget)
+            if task.status not in tasks_by_status:
+                tasks_by_status[task.status] = []
+            tasks_by_status[task.status].append(task)
+        
+        # Clear existing tasks in columns
+        for column in self.columns.values():
+            for i in reversed(range(column.tasks_layout.count())):
+                item = column.tasks_layout.itemAt(i)
+                if item.widget():
+                    item.widget().setParent(None)
+        
+        # Add tasks to columns
+        for status, column in self.columns.items():
+            if status in tasks_by_status:
+                # Sort tasks by order_index
+                status_tasks = sorted(tasks_by_status[status], key=lambda t: t.order_index)
+                for task in status_tasks:
+                    task_widget = TaskWidget(task, parent=column)
+                    # Connect the edit and delete signals
+                    task_widget.edit_clicked.connect(self.editTask)
+                    task_widget.delete_clicked.connect(self.deleteTask)
+                    column.tasks_layout.addWidget(task_widget)
+                    
+        # Add spacer at the end of each column for proper spacing
+        for column in self.columns.values():
+            spacer = QWidget()
+            from PyQt5.QtWidgets import QSizePolicy
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            column.tasks_layout.addWidget(spacer)
+    
+    def checkForUpdates(self):
+        """Periodically check for updates to the kanban board."""
+        # Only check if the widget is visible
+        if not self.isVisible():
+            return
+            
+        # Get current tasks from database
+        current_tasks = self.db.get_tasks_by_program(self.program_id)
+        
+        # Extract tasks versions from database
+        db_task_versions = {task.id: task.version for task in current_tasks}
+        
+        # Check for differences in versions
+        needs_refresh = False
+        
+        # Look for tasks that were updated
+        for task_id, db_version in db_task_versions.items():
+            if task_id in self.task_versions:
+                # Task exists in our local cache
+                if db_version > self.task_versions[task_id]:
+                    # Task was updated by another user
+                    needs_refresh = True
+                    break
             else:
-                # Default to "To Do" if status is not recognized
-                self.columns["todo"].addTaskWidget(task_widget)
+                # New task was added
+                needs_refresh = True
+                break
+                
+        # Look for tasks that were deleted
+        for task_id in self.task_versions:
+            if task_id not in db_task_versions:
+                # Task was deleted
+                needs_refresh = True
+                break
+        
+        # Refresh if needed
+        if needs_refresh:
+            self.refreshRequired.emit()
+            self.loadTasks()
     
     def addTask(self, status):
         """Add a new task to the specified column."""
@@ -500,47 +638,159 @@ class KanbanBoard(QWidget):
             self.loadTasks()
     
     def editTask(self, task):
-        """Edit an existing task."""
+        """Edit an existing task with concurrency control."""
+        # Check if the task version is current before editing
+        current_task = self.db.get_task_by_id(task.id)
+        if not current_task:
+            QMessageBox.warning(self, "Task Not Found", 
+                               f"The task '{task.name}' no longer exists and may have been deleted by another user.")
+            self.loadTasks()
+            return
+        
+        # Check for version conflict
+        if current_task.version > task.version:
+            # Task was modified by another user
+            if self.conflict_resolution_mode == "last_wins":
+                # Silently reload with the latest version
+                self.loadTasks()
+                QMessageBox.information(self, "Task Updated", 
+                                       f"Task '{task.name}' was updated by another user. The latest version will be shown.")
+                # Try to edit again with the latest version
+                self.editTask(current_task)
+                return
+            else:
+                # Manual conflict resolution
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Warning)
+                msg.setText(f"Task '{task.name}' has been modified by another user.")
+                msg.setInformativeText("What would you like to do?")
+                msg.setWindowTitle("Conflict Detected")
+                
+                btn_use_latest = msg.addButton("Use Latest Version", QMessageBox.ActionRole)
+                btn_override = msg.addButton("Override with My Changes", QMessageBox.ActionRole)
+                btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
+                
+                msg.exec_()
+                
+                if msg.clickedButton() == btn_use_latest:
+                    # Reload with the latest version
+                    self.loadTasks()
+                    # Try to edit again with the latest version
+                    self.editTask(current_task)
+                    return
+                elif msg.clickedButton() == btn_override:
+                    # Force edit with current version
+                    pass  # Continue with edit
+                else:
+                    # Cancel the edit
+                    return
+        
+        # Show the edit dialog
         dialog = TaskDialog(task, parent=self)
         if dialog.exec_():
             task_data = dialog.getTaskData()
             task.name = task_data["name"]
             task.description = task_data["description"]
-            self.db.update_task(task)
-            self.loadTasks()
+            
+            # Update with version checking
+            result = self.db.update_task(task, expected_version=task.version)
+            
+            if isinstance(result, dict) and result.get('conflict', False):
+                QMessageBox.warning(self, "Update Conflict", 
+                                   "The task was modified by another user while you were editing. Your changes were not saved.")
+                self.loadTasks()
+            elif result:
+                # Update local version if successful
+                if isinstance(result, dict) and 'new_version' in result:
+                    self.task_versions[task.id] = result['new_version']
+                self.loadTasks()
     
     def deleteTask(self, task):
-        """Delete an existing task."""
+        """Delete an existing task with concurrency control."""
+        # Check if the task version is current before deleting
+        current_task = self.db.get_task_by_id(task.id)
+        if not current_task:
+            QMessageBox.warning(self, "Task Not Found", 
+                               f"The task '{task.name}' no longer exists and may have been deleted by another user.")
+            self.loadTasks()
+            return
+            
+        # Check for version conflict
+        if current_task.version > task.version:
+            QMessageBox.warning(self, "Task Modified", 
+                               f"Task '{task.name}' has been modified by another user. Please refresh and try again.")
+            self.loadTasks()
+            return
+            
         reply = QMessageBox.question(self, "Confirm Delete", 
                                    f"Are you sure you want to delete task '{task.name}'?",
                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         
         if reply == QMessageBox.Yes:
-            self.db.delete_task(task.id)
-            self.loadTasks()
+            result = self.db.delete_task(task.id)
+            if result:
+                # Remove from version tracking
+                if task.id in self.task_versions:
+                    del self.task_versions[task.id]
+                self.loadTasks()
     
     def onTaskDropped(self, task_id, new_status):
-        """Update task status when dropped into a new column."""
-        self.db.update_task_status(task_id, new_status)
-        self.loadTasks()
+        """Update task status when dropped into a new column with concurrency control."""
+        # Get current task version
+        task = self.db.get_task_by_id(task_id)
+        if not task:
+            QMessageBox.warning(self, "Task Not Found", 
+                               "The task no longer exists and may have been deleted by another user.")
+            self.loadTasks()
+            return
+            
+        current_version = task.version
+        expected_version = self.task_versions.get(task_id, current_version)
+        
+        # Update with version checking
+        result = self.db.update_task_status(task_id, new_status, expected_version=expected_version)
+        
+        if isinstance(result, dict) and result.get('conflict', False):
+            QMessageBox.warning(self, "Update Conflict", 
+                               "The task was modified by another user. The board will refresh with the latest changes.")
+            self.loadTasks()
+        elif result:
+            # Update local version if successful
+            if isinstance(result, dict) and 'new_version' in result:
+                self.task_versions[task_id] = result['new_version']
+            self.loadTasks()
     
     def onTaskReordered(self, task_id, new_position):
-        """Update task order when reordered within a column."""
+        """Update task order when reordered within a column with concurrency control."""
         # Find the task to get its status and program_id
         task = None
         for column in self.columns.values():
             for i in range(column.tasks_layout.count()):
-                task_widget = column.tasks_layout.itemAt(i).widget()
-                if task_widget and task_widget.task.id == task_id:
-                    task = task_widget.task
-                    break
+                item = column.tasks_layout.itemAt(i)
+                if item and item.widget() and isinstance(item.widget(), TaskWidget):
+                    task_widget = item.widget()
+                    if task_widget.task.id == task_id:
+                        task = task_widget.task
+                        break
             if task:
                 break
         
         if task:
-            # Update the task order in the database
-            self.db.reorder_tasks(self.program_id, task.status, task_id, new_position)
-            self.loadTasks()
+            # Get expected version
+            expected_version = self.task_versions.get(task_id, task.version)
+            
+            # Update the task order in the database with concurrency control
+            result = self.db.reorder_tasks(self.program_id, task.status, task_id, new_position, expected_version=expected_version)
+            
+            if isinstance(result, dict) and result.get('conflict', False):
+                QMessageBox.warning(self, "Reorder Conflict", 
+                                   "The task order was modified by another user. The board will refresh with the latest changes.")
+                self.loadTasks()
+            elif result:
+                # Update local version if successful
+                if isinstance(result, dict) and 'new_version' in result:
+                    self.task_versions[task_id] = result['new_version']
+                self.loadTasks()
     
     def onColumnMoved(self, column_id, new_position):
         """Update column order when a column is moved."""
@@ -550,7 +800,7 @@ class KanbanBoard(QWidget):
         # If no program-specific config exists, get from global config
         if column_configs is None:
             # Get column configuration from global config
-            kanban_config = self.config.get("kanban_columns", [])
+            kanban_config = self.config.value("kanban_columns", [])
             
             # Handle old configuration format (dictionary with key-value pairs)
             if isinstance(kanban_config, dict):
@@ -580,69 +830,263 @@ class KanbanBoard(QWidget):
         
         # Update the column titles in the UI
         self.createColumns()
-        
-        # Reload tasks
         self.loadTasks()
+        
+        # Inform the user
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Settings Saved", 
+                               "Kanban board columns have been updated.")
+    
+    def setConflictResolutionMode(self, mode):
+        """Set the conflict resolution mode.
+        
+        Args:
+            mode (str): Either "last_wins" or "manual_resolution"
+        """
+        if mode in ["last_wins", "manual_resolution"]:
+            self.conflict_resolution_mode = mode
+    
+    def customizeColumns(self):
+        """Customize the column titles and structure."""
+        # Create the dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Customize Kanban Board")
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        
+        # Create tab widget for different settings
+        tab_widget = QTabWidget()
+        layout.addWidget(tab_widget)
+        
+        # Columns Tab
+        columns_tab = QWidget()
+        columns_layout = QVBoxLayout()
+        columns_tab.setLayout(columns_layout)
+        
+        # Get program-specific column configuration
+        column_configs = self.db.get_program_kanban_config(self.program_id)
+        
+        # If no program-specific config exists, get from global config
+        if column_configs is None:
+            # Get column configuration from general settings
+            kanban_config = self.config.value("kanban_columns", [])
+            
+            # Handle old configuration format (dictionary with key-value pairs)
+            if isinstance(kanban_config, dict):
+                # Convert old format to new format
+                column_configs = [{"id": column_id, "title": kanban_config[column_id]} for column_id in kanban_config]
+            # Handle new configuration format (list of objects)
+            elif isinstance(kanban_config, list):
+                column_configs = kanban_config
+            
+            # If no valid configuration, use defaults
+            if not column_configs:
+                column_configs = [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ]
+        
+        # Create widgets for each column configuration
+        column_widgets = []
+        for i, column_config in enumerate(column_configs):
+            column_id = column_config.get("id", f"column_{i}")
+            title = column_config.get("title", f"Column {i+1}")
+            
+            row_layout = QHBoxLayout()
+            
+            # Column ID (read-only)
+            id_label = QLabel(f"ID: {column_id}")
+            row_layout.addWidget(id_label)
+            
+            # Column Title (editable)
+            title_label = QLabel("Title:")
+            row_layout.addWidget(title_label)
+            
+            title_edit = QLineEdit(title)
+            row_layout.addWidget(title_edit)
+            
+            # Delete button
+            from PyQt5.QtWidgets import QPushButton
+            delete_btn = QPushButton("Delete")
+            delete_btn.setProperty("column_index", i)
+            delete_btn.clicked.connect(lambda checked, idx=i: self.deleteColumnFromCustomizeDialog(idx, column_configs))
+            row_layout.addWidget(delete_btn)
+            
+            column_widgets.append({"id": column_id, "title_edit": title_edit})
+            
+            columns_layout.addLayout(row_layout)
+        
+        # Add columns tab
+        tab_widget.addTab(columns_tab, "Columns")
+        
+        # Concurrency Settings Tab
+        concurrency_tab = QWidget()
+        concurrency_layout = QVBoxLayout()
+        concurrency_tab.setLayout(concurrency_layout)
+        
+        # Conflict Resolution Mode
+        conflict_mode_layout = QHBoxLayout()
+        conflict_mode_label = QLabel("Conflict Resolution Mode:")
+        conflict_mode_layout.addWidget(conflict_mode_label)
+        
+        from PyQt5.QtWidgets import QComboBox
+        
+        conflict_mode_combo = QComboBox()
+        conflict_mode_combo.addItem("Last Writer Wins (Automatic)", "last_wins")
+        conflict_mode_combo.addItem("Manual Resolution (Ask User)", "manual_resolution")
+        
+        # Set current value
+        current_mode_index = 0  # default to last_wins
+        if self.conflict_resolution_mode == "manual_resolution":
+            current_mode_index = 1
+        conflict_mode_combo.setCurrentIndex(current_mode_index)
+        
+        conflict_mode_layout.addWidget(conflict_mode_combo)
+        concurrency_layout.addLayout(conflict_mode_layout)
+        
+        # Explanation of modes
+        explanation = QLabel(
+            "Last Writer Wins: Changes by the most recent user automatically override previous changes.\n"
+            "Manual Resolution: When conflicts occur, you'll be asked how to resolve them."
+        )
+        explanation.setWordWrap(True)
+        concurrency_layout.addWidget(explanation)
+        
+        # Add concurrency tab
+        tab_widget.addTab(concurrency_tab, "Concurrency Settings")
+        
+        # Add spacer
+        concurrency_layout.addStretch()
+        
+        # Refresh interval setting
+        refresh_layout = QHBoxLayout()
+        refresh_label = QLabel("Auto-refresh interval (seconds):")
+        refresh_layout.addWidget(refresh_label)
+        
+        from PyQt5.QtWidgets import QSpinBox
+        
+        refresh_interval_spinner = QSpinBox()
+        refresh_interval_spinner.setMinimum(1)
+        refresh_interval_spinner.setMaximum(60)
+        refresh_interval_spinner.setValue(int(self.refresh_timer.interval() / 1000))
+        refresh_layout.addWidget(refresh_interval_spinner)
+        
+        concurrency_layout.addLayout(refresh_layout)
+        
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        
+        # Execute dialog
+        if dialog.exec_():
+            # Process column configurations
+            updated_configs = []
+            for widget in column_widgets:
+                updated_configs.append({
+                    "id": widget["id"],
+                    "title": widget["title_edit"].text()
+                })
+            
+            # Save the program-specific column configuration
+            self.db.save_program_kanban_config(self.program_id, updated_configs)
+            
+            # Update conflict resolution mode
+            new_mode = conflict_mode_combo.currentData()
+            self.setConflictResolutionMode(new_mode)
+            
+            # Update refresh interval
+            new_interval = refresh_interval_spinner.value() * 1000  # convert to milliseconds
+            self.refresh_timer.setInterval(new_interval)
+            
+            # Recreate columns with new configuration
+            self.createColumns()
+            
+            # Reload tasks
+            self.loadTasks()
+            
+            # Notify user
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Settings Saved", 
+                               "Kanban board settings have been updated.")
     
     def editProgram(self):
         """Edit the program name."""
         name, ok = QInputDialog.getText(self, "Edit Program", 
-                                     "Program Name:", text=self.program.name)
+                                     "Program Name:", text=self.db.get_program_by_id(self.program_id).name)
         if ok and name:
-            self.program.name = name
-            # Update the program in the database
-            if not self.db.update_program(self.program):
-                QMessageBox.warning(self, "Error", "Failed to update program in database")
-                return
-            
+            self.db.update_program(Program(name=name, id=self.program_id))
             # Update the tab text
             parent = self.parent()
             if isinstance(parent, QTabWidget):
                 index = parent.indexOf(self)
                 parent.setTabText(index, name)
-    
-    def customizeColumns(self):
-        """Open dialog to customize column titles."""
-        dialog = ColumnSettingsDialog(self)
-        dialog.exec_()
-    
-    def moveColumnUp(self, index):
-        """Move a column up in the list (decrease index)."""
-        if index <= 0:
-            return False  # Already at the top
+
+    def deleteColumnFromCustomizeDialog(self, index, column_configs):
+        """Delete a column from the kanban board.
         
-        # Get program-specific column configuration
-        column_configs = self.db.get_program_kanban_config(self.program_id)
+        Args:
+            index: Index of the column to delete
+            column_configs: List of column configurations
+        """
+        # Check if we have enough columns to delete one
+        if len(column_configs) <= 3:
+            QMessageBox.warning(self, "Cannot Delete Column", 
+                              "You must have at least 3 columns in your Kanban board.")
+            return
+            
+        # Confirm with user
+        column_to_delete = column_configs[index]
         
-        # Swap columns
-        column_configs[index], column_configs[index-1] = column_configs[index-1], column_configs[index]
+        # Get tasks in this column directly from the database
+        program_tasks = self.db.get_tasks_by_program(self.program_id)
+        tasks_in_column = [task for task in program_tasks if task.status == column_to_delete["id"]]
         
-        # Save updated configuration
-        self.db.save_program_kanban_config(self.program_id, column_configs)
+        message = f"Are you sure you want to delete the column '{column_to_delete['title']}'?"
+        if tasks_in_column:
+            message += f"\n\nThis column contains {len(tasks_in_column)} tasks that will be moved to the first available column."
         
-        # Update UI
-        self.createColumns()
-        self.loadTasks()
-        return True
-    
-    def moveColumnDown(self, index):
-        """Move a column down in the list (increase index)."""
-        # Get program-specific column configuration
-        column_configs = self.db.get_program_kanban_config(self.program_id)
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Column Deletion", 
+            message, 
+            QMessageBox.Yes | QMessageBox.No
+        )
         
-        if index >= len(column_configs) - 1:
-            return False  # Already at the bottom
-        
-        # Swap columns
-        column_configs[index], column_configs[index+1] = column_configs[index+1], column_configs[index]
-        
-        # Save updated configuration
-        self.db.save_program_kanban_config(self.program_id, column_configs)
-        
-        # Update UI
-        self.createColumns()
-        self.loadTasks()
-        return True
+        if confirm == QMessageBox.Yes:
+            # Get the ID of the column being deleted
+            deleted_column_id = column_configs[index]["id"]
+            
+            # Remove the column from the configuration
+            column_configs.pop(index)
+            
+            # Save the updated configuration
+            self.db.save_program_kanban_config(self.program_id, column_configs)
+            
+            # If there are tasks in the deleted column, move them to the first column
+            if column_configs and tasks_in_column:
+                first_column_id = column_configs[0]["id"]
+                
+                # Update task statuses in database
+                for task in tasks_in_column:
+                    task.status = first_column_id
+                    self.db.update_task_status(task.id, first_column_id)
+            
+            # Recreate columns with the updated configuration
+            self.createColumns()
+            
+            # Reload tasks to reflect the changes
+            self.loadTasks()
+            
+            # Close the customize columns dialog by finding and closing it
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QDialog) and widget.windowTitle() == "Customize Kanban Board":
+                    widget.close()
+                    break
 
 
 class TaskDialog(QDialog):
@@ -691,283 +1135,3 @@ class TaskDialog(QDialog):
             "name": self.name_input.text(),
             "description": self.desc_input.toPlainText()
         }
-
-
-class ColumnSettingsDialog(QDialog):
-    """Dialog for customizing column titles."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.kanban_board = parent
-        self.db = self.kanban_board.db
-        self.program_id = self.kanban_board.program_id
-        self.initUI()
-    
-    def initUI(self):
-        self.setWindowTitle("Customize Kanban Columns")
-        self.setMinimumWidth(400)
-        
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-        
-        # Add description
-        description = QLabel("Customize the titles of your Kanban board columns:")
-        layout.addWidget(description)
-        
-        # Get program-specific column configuration
-        program_column_config = self.db.get_program_kanban_config(self.program_id)
-        
-        self.current_columns = []
-        
-        # If we have program-specific config, use it
-        if program_column_config:
-            if isinstance(program_column_config, list):
-                self.current_columns = program_column_config
-            else:
-                # Handle unexpected format
-                self.current_columns = [
-                    {"id": "todo", "title": "To Do"},
-                    {"id": "in_progress", "title": "In Progress"},
-                    {"id": "done", "title": "Done"}
-                ]
-        else:
-            # Get current values from global config
-            kanban_config = self.kanban_board.config.get("kanban_columns", [])
-            
-            # Handle old configuration format (dictionary with key-value pairs)
-            if isinstance(kanban_config, dict):
-                for column_id, column_title in kanban_config.items():
-                    self.current_columns.append({"id": column_id, "title": column_title})
-            # Handle new configuration format (list of objects)
-            elif isinstance(kanban_config, list):
-                self.current_columns = kanban_config
-            
-            # If no valid configuration, use defaults
-            if not self.current_columns:
-                self.current_columns = [
-                    {"id": "todo", "title": "To Do"},
-                    {"id": "in_progress", "title": "In Progress"},
-                    {"id": "done", "title": "Done"}
-                ]
-        
-        # Columns container
-        self.columns_container = QFrame()
-        self.columns_layout = QVBoxLayout()
-        self.columns_container.setLayout(self.columns_layout)
-        layout.addWidget(self.columns_container)
-        
-        # Add buttons for adding/removing columns
-        btn_layout = QHBoxLayout()
-        
-        self.add_column_btn = QPushButton("Add Column")
-        self.add_column_btn.clicked.connect(self.addColumn)
-        btn_layout.addWidget(self.add_column_btn)
-        
-        # Disable the add button if we already have 5 columns
-        self.add_column_btn.setEnabled(len(self.current_columns) < 5)
-        
-        layout.addLayout(btn_layout)
-        
-        # Add note about column limitations
-        note = QLabel("Note: You need at least 3 columns and can have up to 5 columns.")
-        note.setStyleSheet("color: #666666; font-style: italic;")
-        layout.addWidget(note)
-        
-        # Build form after creating all UI elements
-        self.rebuildColumnForm()
-        
-        # Add buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.saveColumnTitles)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-    
-    def addColumnInput(self, column, index=None):
-        """Add a column input to the form"""
-        row_widget = QFrame()
-        row_layout = QHBoxLayout()
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_widget.setLayout(row_layout)
-        
-        # Text input
-        column_input = QLineEdit()
-        column_input.setText(column["title"])
-        column_input.setPlaceholderText("Column Title")
-        row_layout.addWidget(column_input)
-        
-        # Buttons
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(2)
-        
-        # Move up button
-        move_up_btn = QPushButton("↑")
-        move_up_btn.setFixedWidth(30)
-        move_up_btn.clicked.connect(lambda: self.moveColumnUp(row_widget))
-        buttons_layout.addWidget(move_up_btn)
-        
-        # Move down button
-        move_down_btn = QPushButton("↓")
-        move_down_btn.setFixedWidth(30)
-        move_down_btn.clicked.connect(lambda: self.moveColumnDown(row_widget))
-        buttons_layout.addWidget(move_down_btn)
-        
-        # Remove button (only enabled if we have more than 3 columns)
-        remove_btn = QPushButton("×")
-        remove_btn.setFixedWidth(30)
-        remove_btn.clicked.connect(lambda: self.removeColumn(row_widget))
-        remove_btn.setEnabled(len(self.current_columns) > 3)
-        buttons_layout.addWidget(remove_btn)
-        
-        row_layout.addLayout(buttons_layout)
-        
-        # Store references to widgets
-        row_widget.column_input = column_input
-        row_widget.column_id = column["id"]
-        row_widget.move_up_btn = move_up_btn
-        row_widget.move_down_btn = move_down_btn
-        row_widget.remove_btn = remove_btn
-        
-        # Insert at position or add to end
-        if index is not None and index < self.columns_layout.count():
-            self.columns_layout.insertWidget(index, row_widget)
-        else:
-            self.columns_layout.addWidget(row_widget)
-            
-        return row_widget
-    
-    def rebuildColumnForm(self):
-        """Rebuild the column form based on current columns"""
-        # Clear existing form
-        while self.columns_layout.count():
-            widget = self.columns_layout.takeAt(0).widget()
-            if widget:
-                widget.deleteLater()
-        
-        # Add inputs for each column
-        for column in self.current_columns:
-            self.addColumnInput(column)
-        
-        # Update button states
-        self.updateButtonStates()
-    
-    def updateButtonStates(self):
-        """Update button states based on current columns"""
-        # Get all column rows
-        column_rows = []
-        for i in range(self.columns_layout.count()):
-            widget = self.columns_layout.itemAt(i).widget()
-            if widget:
-                column_rows.append(widget)
-        
-        # Update move up/down buttons
-        for i, row in enumerate(column_rows):
-            # First row can't move up
-            row.move_up_btn.setEnabled(i > 0)
-            # Last row can't move down
-            row.move_down_btn.setEnabled(i < len(column_rows) - 1)
-            # Can only remove if we have more than 3 columns
-            row.remove_btn.setEnabled(len(column_rows) > 3)
-        
-        # Update add column button
-        self.add_column_btn.setEnabled(len(column_rows) < 5)
-    
-    def moveColumnUp(self, row_widget):
-        """Move a column up in the form"""
-        # Find index of row
-        index = -1
-        for i in range(self.columns_layout.count()):
-            if self.columns_layout.itemAt(i).widget() == row_widget:
-                index = i
-                break
-        
-        if index <= 0:
-            return  # Already at the top
-        
-        # Swap columns in the data
-        self.current_columns[index], self.current_columns[index-1] = self.current_columns[index-1], self.current_columns[index]
-        
-        # Rebuild form
-        self.rebuildColumnForm()
-    
-    def moveColumnDown(self, row_widget):
-        """Move a column down in the form"""
-        # Find index of row
-        index = -1
-        for i in range(self.columns_layout.count()):
-            if self.columns_layout.itemAt(i).widget() == row_widget:
-                index = i
-                break
-        
-        if index < 0 or index >= self.columns_layout.count() - 1:
-            return  # Already at the bottom or not found
-        
-        # Swap columns in the data
-        self.current_columns[index], self.current_columns[index+1] = self.current_columns[index+1], self.current_columns[index]
-        
-        # Rebuild form
-        self.rebuildColumnForm()
-    
-    def removeColumn(self, row_widget):
-        """Remove a column from the form"""
-        # Check that we have more than 3 columns
-        if self.columns_layout.count() <= 3:
-            return
-        
-        # Find index of row
-        index = -1
-        for i in range(self.columns_layout.count()):
-            if self.columns_layout.itemAt(i).widget() == row_widget:
-                index = i
-                break
-        
-        if index < 0:
-            return  # Not found
-        
-        # Remove from the data
-        self.current_columns.pop(index)
-        
-        # Rebuild form
-        self.rebuildColumnForm()
-    
-    def addColumn(self):
-        """Add a new column to the form"""
-        # Check that we have less than 5 columns
-        if self.columns_layout.count() >= 5:
-            return
-        
-        # Create a unique ID for the new column
-        import uuid
-        new_id = str(uuid.uuid4())[:8]
-        
-        # Add to the data
-        self.current_columns.append({"id": new_id, "title": "New Column"})
-        
-        # Rebuild form
-        self.rebuildColumnForm()
-    
-    def saveColumnTitles(self):
-        """Save column titles from the form"""
-        # Update column titles from the form
-        for i in range(self.columns_layout.count()):
-            widget = self.columns_layout.itemAt(i).widget()
-            if widget:
-                self.current_columns[i]["title"] = widget.column_input.text()
-        
-        # Save to program-specific configuration
-        self.db.save_program_kanban_config(self.program_id, self.current_columns)
-        
-        # Update the Kanban board UI
-        self.kanban_board.createColumns()
-        self.kanban_board.loadTasks()
-        
-        # Close the dialog
-        self.accept()
-        
-        # Inform the user
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Settings Saved", 
-                               "Kanban board columns have been updated.")
-
-
-# Import needed for drag and drop
-from PyQt5.QtWidgets import QApplication

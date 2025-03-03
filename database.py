@@ -131,12 +131,20 @@ class Database:
                 program_id INTEGER NOT NULL,
                 order_index INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                modified_at TIMESTAMP,
+                version INTEGER DEFAULT 1,
                 FOREIGN KEY (program_id) REFERENCES programs (id) ON DELETE CASCADE
             )
             ''')
             
             # Check if order_index column exists in tasks table and add it if not
             self._ensure_column_exists('tasks', 'order_index', 'INTEGER DEFAULT 0')
+            
+            # Check if modified_at column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'modified_at', 'TIMESTAMP')
+            
+            # Check if version column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'version', 'INTEGER DEFAULT 1')
             
             # Create audit_log table
             cursor.execute('''
@@ -198,16 +206,25 @@ class Database:
         except sqlite3.Error as e:
             print(f"Error creating tables: {e}")
             
-    def _ensure_column_exists(self, table, column, column_type):
-        """Ensure a column exists in a table, adding it if it doesn't."""
+    def _ensure_column_exists(self, table, column, data_type):
+        """Check if a column exists in a table and add it if not."""
         try:
             cursor = self.conn.cursor()
-            cursor.execute(f"PRAGMA table_info({table})")
-            columns = [row[1] for row in cursor.fetchall()]
             
+            # Attempt to get column info
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [column_info[1] for column_info in cursor.fetchall()]
+            
+            # Add column if it doesn't exist
             if column not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {data_type}")
                 print(f"Adding {column} column to {table} table")
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                
+                # Initialize modified_at timestamps after adding the column
+                if column == 'modified_at':
+                    cursor.execute(f"UPDATE {table} SET {column} = CURRENT_TIMESTAMP")
+                    print(f"Initializing {column} values in {table} table")
+                
                 self.conn.commit()
         except sqlite3.Error as e:
             print(f"Error ensuring column exists: {e}")
@@ -1112,11 +1129,9 @@ class Database:
         
         try:
             # Check connection and reconnect if needed
-            if not self.conn:
-                success = self._connect()
-                if not success:
-                    print("Failed to connect to the database")
-                    return None
+            if not self.check_connection():
+                print("Error: Database connection lost and couldn't be re-established")
+                return None
             
             # Calculate next order_index for this status in this program
             cursor = self.conn.cursor()
@@ -1128,8 +1143,8 @@ class Database:
             next_order = cursor.fetchone()['next_order']
             
             cursor.execute('''
-                INSERT INTO tasks (name, description, status, program_id, order_index)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO tasks (name, description, status, program_id, order_index, modified_at, version)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
             ''', (task.name, task.description, task.status, task.program_id, next_order))
             
             task_id = cursor.lastrowid
@@ -1137,7 +1152,17 @@ class Database:
             
             # Set the task ID
             task.id = task_id
-            return task
+            
+            # Create an audit log entry
+            if hasattr(self, 'user') and self.user:
+                self.log_action(
+                    "CREATE", 
+                    "task", 
+                    task_id, 
+                    f"Task '{task.name}' created in program {task.program_id}"
+                )
+            
+            return task_id
         except sqlite3.Error as e:
             print(f"Error adding task: {e}")
             return None
@@ -1159,7 +1184,10 @@ class Database:
                             description=task_data.get('description', ''),
                             status=task_data.get('status', 'To Do'),
                             program_id=task_data.get('program_id', program_id),
-                            order_index=task_data.get('order_index', 0)
+                            order_index=task_data.get('order_index', 0),
+                            created_at=task_data.get('created_at'),
+                            modified_at=task_data.get('modified_at'),
+                            version=task_data.get('version', 1)
                         )
                         tasks.append(task)
                     
@@ -1188,7 +1216,10 @@ class Database:
                 description=row['description'],
                 status=row['status'],
                 program_id=row['program_id'],
-                order_index=row['order_index'] if 'order_index' in row.keys() else 0
+                order_index=row['order_index'] if 'order_index' in row.keys() else 0,
+                created_at=row['created_at'] if 'created_at' in row.keys() else None,
+                modified_at=row['modified_at'] if 'modified_at' in row.keys() else None,
+                version=row['version'] if 'version' in row.keys() else 1
             ) for row in rows]
         except sqlite3.Error as e:
             print(f"Error getting tasks: {e}")
@@ -1214,6 +1245,12 @@ class Database:
                         status=task_data.get('status', 'To Do'),
                         program_id=task_data.get('program_id')
                     )
+                    if 'created_at' in task_data:
+                        task.created_at = task_data['created_at']
+                    if 'modified_at' in task_data:
+                        task.modified_at = task_data['modified_at']
+                    if 'version' in task_data:
+                        task.version = task_data['version']
                     return task
                     
                 print(f"Unexpected response from API: {response}")
@@ -1240,15 +1277,18 @@ class Database:
                     description=row['description'],
                     status=row['status'],
                     program_id=row['program_id'],
-                    order_index=row['order_index'] if 'order_index' in row.keys() else 0
+                    order_index=row['order_index'] if 'order_index' in row.keys() else 0,
+                    created_at=row['created_at'] if 'created_at' in row.keys() else None,
+                    modified_at=row['modified_at'] if 'modified_at' in row.keys() else None,
+                    version=row['version'] if 'version' in row.keys() else 1
                 )
             return None
         except sqlite3.Error as e:
             print(f"Error getting task by ID: {e}")
             return None
     
-    def update_task(self, task):
-        """Update an existing task."""
+    def update_task(self, task, expected_version=None):
+        """Update an existing task in the database with concurrency control."""
         # In remote mode, use API client
         if self.mode == "remote":
             try:
@@ -1275,25 +1315,47 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.conn:
-                success = self._connect()
-                if not success:
-                    print("Failed to connect to the database")
-                    return False
+            if not self.check_connection():
+                print("Error: Database connection lost and couldn't be re-established")
+                return False
                 
             cursor = self.conn.cursor()
+            
+            # If version checking is enabled, verify the current version
+            if expected_version is not None:
+                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task.id,))
+                row = cursor.fetchone()
+                if not row:
+                    print(f"Error: Task with ID {task.id} not found")
+                    return False
+                    
+                current_version = row['version']
+                if current_version != expected_version:
+                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
+                    return {'conflict': True, 'current_version': current_version}
+            
+            # Update the task with new version
             cursor.execute(
-                "UPDATE tasks SET name = ?, description = ?, status = ?, order_index = ? WHERE id = ?",
+                """UPDATE tasks 
+                   SET name = ?, description = ?, status = ?, order_index = ?, 
+                       modified_at = CURRENT_TIMESTAMP, version = version + 1 
+                   WHERE id = ?""",
                 (task.name, task.description, task.status, task.order_index, task.id)
             )
             self.conn.commit()
-            return True
+            
+            # Return the updated version for future operations
+            cursor.execute("SELECT version FROM tasks WHERE id = ?", (task.id,))
+            row = cursor.fetchone()
+            new_version = row['version'] if row else None
+            
+            return {'success': True, 'new_version': new_version}
         except sqlite3.Error as e:
             print(f"Error updating task: {e}")
             return False
     
-    def update_task_status(self, task_id, new_status):
-        """Update only the status of a task."""
+    def update_task_status(self, task_id, new_status, expected_version=None):
+        """Update only the status of a task with concurrency control."""
         # In remote mode, use API client
         if self.mode == "remote":
             try:
@@ -1332,8 +1394,22 @@ class Database:
                 print("Error: Database connection lost and couldn't be re-established")
                 return False
             
-            # Get highest order_index in the target column    
             cursor = self.conn.cursor()
+            
+            # If version checking is enabled, verify the current version
+            if expected_version is not None:
+                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
+                row = cursor.fetchone()
+                if not row:
+                    print(f"Error: Task with ID {task_id} not found")
+                    return False
+                    
+                current_version = row['version']
+                if current_version != expected_version:
+                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
+                    return {'conflict': True, 'current_version': current_version}
+            
+            # Get highest order_index in the target column    
             task = self.get_task_by_id(task_id)
             if task:
                 cursor.execute("""
@@ -1344,11 +1420,20 @@ class Database:
                 next_order = cursor.fetchone()['next_order']
                 
                 cursor.execute(
-                    "UPDATE tasks SET status = ?, order_index = ? WHERE id = ?",
+                    """UPDATE tasks 
+                       SET status = ?, order_index = ?, modified_at = CURRENT_TIMESTAMP, 
+                           version = version + 1 
+                       WHERE id = ?""",
                     (new_status, next_order, task_id)
                 )
                 self.conn.commit()
-                return True
+                
+                # Return the updated version for future operations
+                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
+                row = cursor.fetchone()
+                new_version = row['version'] if row else None
+                
+                return {'success': True, 'new_version': new_version}
             return False
         except sqlite3.Error as e:
             print(f"Error updating task status: {e}")
@@ -1366,7 +1451,7 @@ class Database:
                 
             cursor = self.conn.cursor()
             cursor.execute(
-                "UPDATE tasks SET order_index = ? WHERE id = ?",
+                "UPDATE tasks SET order_index = ?, modified_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ?",
                 (new_order_index, task_id)
             )
             self.conn.commit()
@@ -1375,17 +1460,28 @@ class Database:
             print(f"Error updating task order: {e}")
             return False
             
-    def reorder_tasks(self, program_id, status, task_id, new_position):
-        """Reorder tasks within a column."""
+    def reorder_tasks(self, program_id, status, task_id, new_position, expected_version=None):
+        """Reorder tasks within a column with concurrency control."""
         try:
             # Check connection and reconnect if needed
-            if not self.conn:
-                success = self._connect()
-                if not success:
-                    print("Failed to connect to the database")
-                    return False
+            if not self.check_connection():
+                print("Error: Database connection lost and couldn't be re-established")
+                return False
                 
             cursor = self.conn.cursor()
+            
+            # If version checking is enabled, verify the current version
+            if expected_version is not None:
+                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
+                row = cursor.fetchone()
+                if not row:
+                    print(f"Error: Task with ID {task_id} not found")
+                    return False
+                    
+                current_version = row['version']
+                if current_version != expected_version:
+                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
+                    return {'conflict': True, 'current_version': current_version}
             
             # Get current task information
             cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -1400,7 +1496,7 @@ class Database:
                 # Moving down - shift tasks in between up
                 cursor.execute("""
                     UPDATE tasks 
-                    SET order_index = order_index - 1
+                    SET order_index = order_index - 1, modified_at = CURRENT_TIMESTAMP, version = version + 1
                     WHERE program_id = ? 
                     AND status = ? 
                     AND order_index > ? 
@@ -1410,7 +1506,7 @@ class Database:
                 # Moving up - shift tasks in between down
                 cursor.execute("""
                     UPDATE tasks 
-                    SET order_index = order_index + 1
+                    SET order_index = order_index + 1, modified_at = CURRENT_TIMESTAMP, version = version + 1
                     WHERE program_id = ? 
                     AND status = ? 
                     AND order_index >= ? 
@@ -1420,12 +1516,18 @@ class Database:
             # Set the new position for the moved task
             cursor.execute("""
                 UPDATE tasks 
-                SET order_index = ?
+                SET order_index = ?, modified_at = CURRENT_TIMESTAMP, version = version + 1
                 WHERE id = ?
             """, (new_position, task_id))
             
             self.conn.commit()
-            return True
+            
+            # Return the updated version for future operations
+            cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
+            row = cursor.fetchone()
+            new_version = row['version'] if row else None
+            
+            return {'success': True, 'new_version': new_version}
         except sqlite3.Error as e:
             print(f"Error reordering tasks: {e}")
             return False
@@ -1464,29 +1566,44 @@ class Database:
             print(f"Error deleting task: {e}")
             return False
     
-    def add_audit_log(self, user_id, action, entity_type, entity_id=None, details=None, ip_address=None):
-        """Add an entry to the audit log."""
+    def log_action(self, action, entity_type, entity_id, details):
+        """Log an action in the audit log."""
         # In remote mode, just log to console but don't try to use the database
         if self.mode == "remote":
-            print(f"REMOTE MODE AUDIT LOG: user_id={user_id}, action={action}, entity_type={entity_type}, entity_id={entity_id}, details={details}")
+            print(f"REMOTE MODE AUDIT LOG: action={action}, entity_type={entity_type}, entity_id={entity_id}, details={details}")
             return 0  # Return a dummy ID
             
         try:
+            # Check connection and reconnect if needed
+            if not self.check_connection():
+                print("Error: Database connection lost and couldn't be re-established")
+                return False
+                
+            print(f"Adding audit log: action={action}, entity_type={entity_type}, entity_id={entity_id}")
             cursor = self.conn.cursor()
-            print(f"Adding audit log: user_id={user_id}, action={action}, entity_type={entity_type}, entity_id={entity_id}")
             cursor.execute(
                 """INSERT INTO audit_log 
                    (user_id, action, entity_type, entity_id, details, ip_address) 
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, action, entity_type, entity_id, details, ip_address)
+                   VALUES (?, ?, ?, ?, ?, ?)""", 
+                (self.user.id if hasattr(self, 'user') and self.user else None, action, entity_type, entity_id, details, self._get_client_ip())
             )
             self.conn.commit()
             log_id = cursor.lastrowid
-            print(f"Successfully added audit log with ID: {log_id}")
             return log_id
         except sqlite3.Error as e:
             print(f"Error adding audit log: {e}")
-            return None
+            return 0
+    
+    # Added for backward compatibility
+    def add_audit_log(self, user_id, action, entity_type, entity_id=None, details=None, ip_address=None):
+        """Add an entry to the audit log."""
+        return self.log_action(action, entity_type, entity_id, details)
+        
+    def _get_client_ip(self):
+        """Get client IP address for audit logs."""
+        # In a real application, you would get this from the request
+        # For now, just return localhost
+        return "127.0.0.1"
     
     def get_audit_logs(self, user_id=None, action=None, entity_type=None, entity_id=None, 
                      start_date=None, end_date=None, limit=100, offset=0):
@@ -1676,13 +1793,11 @@ class Database:
                     shared_access.id = response['id']
                 
                 # Log the access grant
-                self.add_audit_log(
-                    user_id=shared_access.granted_by,
-                    action="grant",
-                    entity_type="shared_access",
-                    entity_id=shared_access.id,
-                    details=f"Access granted to user {shared_access.user_id} for patient {shared_access.patient_id}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "GRANT", 
+                    "shared_access", 
+                    shared_access.id, 
+                    f"Access granted to user {shared_access.user_id} for patient {shared_access.patient_id}"
                 )
                 
                 return True
@@ -1705,13 +1820,11 @@ class Database:
                 shared_access.id = cursor.lastrowid
                 
                 # Log the access grant
-                self.add_audit_log(
-                    user_id=shared_access.granted_by,
-                    action="grant",
-                    entity_type="shared_access",
-                    entity_id=shared_access.id,
-                    details=f"Access granted to user {shared_access.user_id} for patient {shared_access.patient_id}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "GRANT", 
+                    "shared_access", 
+                    shared_access.id, 
+                    f"Access granted to user {shared_access.user_id} for patient {shared_access.patient_id}"
                 )
                 
                 return True
@@ -1736,13 +1849,11 @@ class Database:
                     return False
                 
                 # Log the access update
-                self.add_audit_log(
-                    user_id=shared_access.granted_by,
-                    action="update",
-                    entity_type="shared_access",
-                    entity_id=shared_access.id,
-                    details=f"Access updated for user {shared_access.user_id} to {shared_access.access_level}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "UPDATE", 
+                    "shared_access", 
+                    shared_access.id, 
+                    f"Access updated for user {shared_access.user_id} to {shared_access.access_level}"
                 )
                 
                 return True
@@ -1759,13 +1870,11 @@ class Database:
                 self.conn.commit()
                 
                 # Log the access update
-                self.add_audit_log(
-                    user_id=shared_access.granted_by,
-                    action="update",
-                    entity_type="shared_access",
-                    entity_id=shared_access.id,
-                    details=f"Access updated for user {shared_access.user_id} to {shared_access.access_level}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "UPDATE", 
+                    "shared_access", 
+                    shared_access.id, 
+                    f"Access updated for user {shared_access.user_id} to {shared_access.access_level}"
                 )
                 
                 return True
@@ -1806,13 +1915,11 @@ class Database:
                     return False
                     
                 # Log the access revocation
-                self.add_audit_log(
-                    user_id=shared_access.granted_by,
-                    action="revoke",
-                    entity_type="shared_access",
-                    entity_id=access_id,
-                    details=f"Access revoked for user {shared_access.user_id} to patient {shared_access.patient_id}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "REVOKE", 
+                    "shared_access", 
+                    access_id, 
+                    f"Access revoked for user {shared_access.user_id} to patient {shared_access.patient_id}"
                 )
                 
                 return True
@@ -1834,13 +1941,11 @@ class Database:
                 self.conn.commit()
                 
                 # Log the access revocation
-                self.add_audit_log(
-                    user_id=row['granted_by'],
-                    action="revoke",
-                    entity_type="shared_access",
-                    entity_id=access_id,
-                    details=f"Access revoked for user {row['user_id']} to patient {row['patient_id']}",
-                    ip_address=get_client_ip()
+                self.log_action(
+                    "REVOKE", 
+                    "shared_access", 
+                    access_id, 
+                    f"Access revoked for user {row['user_id']} to patient {row['patient_id']}"
                 )
                 
                 return True
