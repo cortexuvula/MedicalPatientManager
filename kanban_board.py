@@ -645,9 +645,6 @@ class ColumnSettingsDialog(QDialog):
         self.columns_container.setLayout(self.columns_layout)
         layout.addWidget(self.columns_container)
         
-        # Build form
-        self.rebuildColumnForm()
-        
         # Add buttons for adding/removing columns
         btn_layout = QHBoxLayout()
         
@@ -664,6 +661,9 @@ class ColumnSettingsDialog(QDialog):
         note = QLabel("Note: You need at least 3 columns and can have up to 5 columns.")
         note.setStyleSheet("color: #666666; font-style: italic;")
         layout.addWidget(note)
+        
+        # Build form after creating all UI elements
+        self.rebuildColumnForm()
         
         # Add buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
