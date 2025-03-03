@@ -161,15 +161,31 @@ class AuditLogViewer(QDialog):
         filter_group.setLayout(filter_layout)
         main_layout.addWidget(filter_group)
         
-        # Results table
+        # Results table with reorderable columns
         self.log_table = QTableWidget()
         self.log_table.setColumnCount(8)
         self.log_table.setHorizontalHeaderLabels([
             "ID", "Timestamp", "User", "Action", "Entity Type", 
             "Entity ID", "IP Address", "Details"
         ])
-        self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.log_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)  # Make details column stretch
+        
+        # Enable column reordering - Using same approach as in working test case
+        header = self.log_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setFirstSectionMovable(True)
+        
+        # Style the headers to make dragging more obvious and provide visual feedback
+        header.setStyleSheet("QHeaderView::section { padding: 4px; background-color: #e0e0ff; border: 1px solid #b0b0b0; }")
+        
+        # Track column movement
+        header.sectionMoved.connect(self.onColumnMoved)
+        
+        # Set resize modes - this must be done AFTER enabling movement
+        for i in range(header.count()):
+            if i == 7:  # Details column
+                header.setSectionResizeMode(i, QHeaderView.Stretch)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         
         main_layout.addWidget(self.log_table)
         
@@ -385,3 +401,8 @@ class AuditLogViewer(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", 
                                f"Failed to export audit logs: {str(e)}")
+    
+    def onColumnMoved(self, logicalIndex, oldVisualIndex, newVisualIndex):
+        """Handle column movement events."""
+        print(f"Column moved: Logical index {logicalIndex} moved from {oldVisualIndex} to {newVisualIndex}")
+        # Here you could save the column order preferences for this user

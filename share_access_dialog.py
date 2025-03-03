@@ -43,7 +43,7 @@ class ShareAccessDialog(QDialog):
         owner_info = QLabel(f"Owner: {self.db.get_user_name_by_id(self.patient.user_id)}")
         layout.addWidget(owner_info)
         
-        # Current shared users
+        # Current shared users table with reorderable columns
         shared_label = QLabel("Currently Shared With:")
         shared_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
         layout.addWidget(shared_label)
@@ -51,8 +51,25 @@ class ShareAccessDialog(QDialog):
         self.shared_table = QTableWidget()
         self.shared_table.setColumnCount(4)
         self.shared_table.setHorizontalHeaderLabels(["User", "Role", "Access Level", "Actions"])
-        self.shared_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.shared_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        
+        # Enable column reordering - Using same approach as in working test case
+        header = self.shared_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setFirstSectionMovable(True)
+        
+        # Style the headers to make dragging more obvious and provide visual feedback
+        header.setStyleSheet("QHeaderView::section { padding: 4px; background-color: #e0e0ff; border: 1px solid #b0b0b0; }")
+        
+        # Track column movement
+        header.sectionMoved.connect(self.onColumnMoved)
+        
+        # Set resize modes - this must be done AFTER enabling movement
+        for i in range(header.count()):
+            if i == 3:  # Actions column
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.Stretch)
+        
         self.shared_table.verticalHeader().setVisible(False)
         layout.addWidget(self.shared_table)
         
@@ -284,3 +301,7 @@ class ShareAccessDialog(QDialog):
         else:
             QMessageBox.warning(self, "Error", 
                               "Failed to revoke access.")
+    
+    def onColumnMoved(self, logicalIndex, oldVisualIndex, newVisualIndex):
+        """Handle column movement events."""
+        print(f"Column moved: Logical index {logicalIndex} moved from {oldVisualIndex} to {newVisualIndex}")

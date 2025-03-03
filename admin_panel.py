@@ -40,13 +40,29 @@ class AdminPanel(QDialog):
         header_layout.addWidget(header_label)
         layout.addLayout(header_layout)
         
-        # User table
+        # User table with reorderable columns
         self.user_table = QTableWidget()
         self.user_table.setColumnCount(6)
         self.user_table.setHorizontalHeaderLabels(["ID", "Username", "Name", "Email", "Role", "Actions"])
-        self.user_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.user_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.user_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        
+        # Enable column reordering - Using same approach as in working test case
+        header = self.user_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setFirstSectionMovable(True)
+        
+        # Style the headers to make dragging more obvious and provide visual feedback
+        header.setStyleSheet("QHeaderView::section { padding: 4px; background-color: #e0e0ff; border: 1px solid #b0b0b0; }")
+        
+        # Track column movement
+        header.sectionMoved.connect(self.onColumnMoved)
+        
+        # Set resize modes - this must be done AFTER enabling movement
+        for i in range(header.count()):
+            if i == 0 or i == 5:  # ID and Actions columns
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.Stretch)
+        
         self.user_table.verticalHeader().setVisible(False)
         layout.addWidget(self.user_table)
         
@@ -249,3 +265,7 @@ class AdminPanel(QDialog):
             self.db.delete_user(user_id)
             QMessageBox.information(self, "User Deleted", f"User '{user.username}' has been deleted.")
             self.loadUsers()
+    
+    def onColumnMoved(self, logicalIndex, oldVisualIndex, newVisualIndex):
+        """Handle column movement events."""
+        print(f"Column moved: Logical index {logicalIndex} moved from {oldVisualIndex} to {newVisualIndex}")

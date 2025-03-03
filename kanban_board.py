@@ -1,9 +1,9 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QFrame, QInputDialog,
                              QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox,
                              QTabWidget, QApplication, QDialogButtonBox)
-from PyQt5.QtCore import Qt, QMimeData, pyqtSignal
-from PyQt5.QtGui import QDrag, QFont
+from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint
+from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor
 
 from models import Task
 
@@ -120,6 +120,7 @@ class TaskWidget(QFrame):
 class KanbanColumn(QWidget):
     """Widget representing a column in the Kanban board."""
     taskDropped = pyqtSignal(int, str)  # Task ID, new status
+    columnMoved = pyqtSignal(str, int)  # Column ID, new position
     
     def __init__(self, title, status, parent=None):
         super().__init__(parent)
@@ -132,11 +133,22 @@ class KanbanColumn(QWidget):
         layout = QVBoxLayout()
         self.setLayout(layout)
         
+        # Column header
+        header_layout = QHBoxLayout()
+        header_widget = QFrame()
+        header_widget.setObjectName("column_header")
+        header_widget.setLayout(header_layout)
+        header_widget.setCursor(Qt.OpenHandCursor)
+        header_widget.setStyleSheet("background-color: #e0e0e0; border-radius: 3px; padding: 5px;")
+        
         # Column title
         self.title_label = QLabel(self.title)
         self.title_label.setFont(QFont("Arial", 12, QFont.Bold))
         self.title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.title_label)
+        header_layout.addWidget(self.title_label)
+        
+        # Add the header to the main layout
+        layout.addWidget(header_widget)
         
         # Tasks container
         self.tasks_container = QWidget()
@@ -181,6 +193,37 @@ class KanbanColumn(QWidget):
                 background-color: #d0d0d0;
             }
         """)
+        
+        # Install event filter for the header to handle dragging
+        header_widget.installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """Handle mouse events for the column header."""
+        if obj.objectName() == "column_header":
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                self.drag_start_position = event.pos()
+                return True
+            elif event.type() == event.MouseMove and event.buttons() & Qt.LeftButton:
+                # Check if dragging has started
+                if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+                    return True
+                    
+                # Create drag object
+                drag = QDrag(obj)
+                mime_data = QMimeData()
+                mime_data.setText(f"kanban_column:{self.status}")
+                drag.setMimeData(mime_data)
+                
+                # Create pixmap for dragging
+                pixmap = self.grab()
+                drag.setPixmap(pixmap)
+                drag.setHotSpot(event.pos())
+                
+                # Execute the drag
+                result = drag.exec_(Qt.MoveAction)
+                return True
+                
+        return super().eventFilter(obj, event)
     
     def setTitle(self, title):
         """Set the column title."""
@@ -194,12 +237,37 @@ class KanbanColumn(QWidget):
         self.tasks_layout.addWidget(task_widget)
     
     def dragEnterEvent(self, event):
-        if event.mimeData().hasText():
-            event.acceptProposedAction()
+        mime_data = event.mimeData()
+        if mime_data.hasText():
+            text = mime_data.text()
+            if text.startswith("kanban_column:"):
+                # This is a column being dragged
+                event.acceptProposedAction()
+            else:
+                # This is a task being dragged
+                event.acceptProposedAction()
     
     def dropEvent(self, event):
-        task_id = int(event.mimeData().text())
-        self.taskDropped.emit(task_id, self.status)
+        mime_data = event.mimeData()
+        if mime_data.hasText():
+            text = mime_data.text()
+            if text.startswith("kanban_column:"):
+                # Extract dragged column ID
+                dragged_column_id = text.split(":", 1)[1]
+                # Let the parent handle column reordering
+                parent = self.parent()
+                if parent:
+                    # Find the index of this column
+                    for i, column in enumerate(parent.findChildren(KanbanColumn)):
+                        if column == self:
+                            # Emit signal to reorder columns
+                            self.columnMoved.emit(dragged_column_id, i)
+                            break
+            else:
+                # This is a task being dropped
+                task_id = int(event.mimeData().text())
+                self.taskDropped.emit(task_id, self.status)
+        
         event.acceptProposedAction()
 
 
@@ -294,7 +362,7 @@ class KanbanBoard(QWidget):
         self.createColumns()
     
     def createColumns(self):
-        """Create columns based on configuration."""
+        """Create columns based on program-specific configuration."""
         # Clear existing columns
         for column in self.columns.values():
             column.setParent(None)
@@ -307,26 +375,31 @@ class KanbanBoard(QWidget):
             if widget:
                 widget.setParent(None)
         
-        # Get column configuration
-        kanban_config = self.config.get("kanban_columns", [])
-        column_configs = []
+        # Get program-specific column configuration
+        column_configs = self.db.get_program_kanban_config(self.program_id)
         
-        # Handle old configuration format (dictionary with key-value pairs)
-        if isinstance(kanban_config, dict):
-            # Convert old format to new format
-            for column_id, column_title in kanban_config.items():
-                column_configs.append({"id": column_id, "title": column_title})
-        # Handle new configuration format (list of objects)
-        elif isinstance(kanban_config, list):
-            column_configs = kanban_config
-        
-        # If no valid configuration, use defaults
-        if not column_configs:
-            column_configs = [
-                {"id": "todo", "title": "To Do"},
-                {"id": "in_progress", "title": "In Progress"},
-                {"id": "done", "title": "Done"}
-            ]
+        # If no program-specific config, use default config
+        if column_configs is None:
+            # Get column configuration from global config
+            kanban_config = self.config.get("kanban_columns", [])
+            column_configs = []
+            
+            # Handle old configuration format (dictionary with key-value pairs)
+            if isinstance(kanban_config, dict):
+                # Convert old format to new format
+                for column_id, column_title in kanban_config.items():
+                    column_configs.append({"id": column_id, "title": column_title})
+            # Handle new configuration format (list of objects)
+            elif isinstance(kanban_config, list):
+                column_configs = kanban_config
+            
+            # If no valid configuration, use defaults
+            if not column_configs:
+                column_configs = [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ]
         
         # Create columns
         for column_config in column_configs:
@@ -343,6 +416,7 @@ class KanbanBoard(QWidget):
             self.columns[column_id] = column
             self.columns_layout.addWidget(column)
             column.taskDropped.connect(self.onTaskDropped)
+            column.columnMoved.connect(self.onColumnMoved)
     
     def loadTasks(self):
         """Load tasks from the database into the appropriate columns."""
@@ -405,6 +479,48 @@ class KanbanBoard(QWidget):
         self.db.update_task_status(task_id, new_status)
         self.loadTasks()
     
+    def onColumnMoved(self, column_id, new_position):
+        """Update column order when a column is moved."""
+        # Get the program-specific column configuration
+        column_configs = self.db.get_program_kanban_config(self.program_id)
+        
+        # If no program-specific config exists, get from global config
+        if column_configs is None:
+            # Get column configuration from global config
+            kanban_config = self.config.get("kanban_columns", [])
+            
+            # Handle old configuration format (dictionary with key-value pairs)
+            if isinstance(kanban_config, dict):
+                # Convert old format to new format
+                column_configs = [{"id": column_id, "title": kanban_config[column_id]} for column_id in kanban_config]
+            # Handle new configuration format (list of objects)
+            elif isinstance(kanban_config, list):
+                column_configs = kanban_config
+            
+            # If no valid configuration, use defaults
+            if not column_configs:
+                column_configs = [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ]
+        
+        # Move the column to the new position
+        for i, column in enumerate(column_configs):
+            if column["id"] == column_id:
+                column_configs.pop(i)
+                column_configs.insert(new_position, column)
+                break
+        
+        # Save the updated program-specific configuration
+        self.db.save_program_kanban_config(self.program_id, column_configs)
+        
+        # Update the column titles in the UI
+        self.createColumns()
+        
+        # Reload tasks
+        self.loadTasks()
+    
     def editProgram(self):
         """Edit the program name."""
         name, ok = QInputDialog.getText(self, "Edit Program", 
@@ -423,314 +539,323 @@ class KanbanBoard(QWidget):
                 parent.setTabText(index, name)
     
     def customizeColumns(self):
-        """Customize column titles."""
-        from PyQt5.QtWidgets import (QDialog, QFormLayout, QLineEdit, QDialogButtonBox, 
-                                    QLabel, QVBoxLayout, QPushButton, QHBoxLayout, QFrame)
+        """Open dialog to customize column titles."""
+        dialog = ColumnSettingsDialog(self)
+        dialog.exec_()
+    
+    def moveColumnUp(self, index):
+        """Move a column up in the list (decrease index)."""
+        if index <= 0:
+            return False  # Already at the top
         
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Customize Kanban Columns")
-        dialog.setMinimumWidth(400)
+        # Get program-specific column configuration
+        column_configs = self.db.get_program_kanban_config(self.program_id)
+        
+        # Swap columns
+        column_configs[index], column_configs[index-1] = column_configs[index-1], column_configs[index]
+        
+        # Save updated configuration
+        self.db.save_program_kanban_config(self.program_id, column_configs)
+        
+        # Update UI
+        self.createColumns()
+        self.loadTasks()
+        return True
+    
+    def moveColumnDown(self, index):
+        """Move a column down in the list (increase index)."""
+        # Get program-specific column configuration
+        column_configs = self.db.get_program_kanban_config(self.program_id)
+        
+        if index >= len(column_configs) - 1:
+            return False  # Already at the bottom
+        
+        # Swap columns
+        column_configs[index], column_configs[index+1] = column_configs[index+1], column_configs[index]
+        
+        # Save updated configuration
+        self.db.save_program_kanban_config(self.program_id, column_configs)
+        
+        # Update UI
+        self.createColumns()
+        self.loadTasks()
+        return True
+
+
+class ColumnSettingsDialog(QDialog):
+    """Dialog for customizing column titles."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.kanban_board = parent
+        self.db = self.kanban_board.db
+        self.program_id = self.kanban_board.program_id
+        self.initUI()
+    
+    def initUI(self):
+        self.setWindowTitle("Customize Kanban Columns")
+        self.setMinimumWidth(400)
         
         layout = QVBoxLayout()
-        dialog.setLayout(layout)
+        self.setLayout(layout)
         
         # Add description
         description = QLabel("Customize the titles of your Kanban board columns:")
         layout.addWidget(description)
         
-        # Get current values from config
-        kanban_config = self.config.get("kanban_columns", [])
+        # Get program-specific column configuration
+        program_column_config = self.db.get_program_kanban_config(self.program_id)
+        
         self.current_columns = []
         
-        # Handle old configuration format (dictionary with key-value pairs)
-        if isinstance(kanban_config, dict):
-            # Convert old format to new format
-            for column_id, column_title in kanban_config.items():
-                self.current_columns.append({"id": column_id, "title": column_title})
-        # Handle new configuration format (list of objects)
-        elif isinstance(kanban_config, list):
-            self.current_columns = kanban_config
+        # If we have program-specific config, use it
+        if program_column_config:
+            if isinstance(program_column_config, list):
+                self.current_columns = program_column_config
+            else:
+                # Handle unexpected format
+                self.current_columns = [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ]
+        else:
+            # Get current values from global config
+            kanban_config = self.kanban_board.config.get("kanban_columns", [])
+            
+            # Handle old configuration format (dictionary with key-value pairs)
+            if isinstance(kanban_config, dict):
+                for column_id, column_title in kanban_config.items():
+                    self.current_columns.append({"id": column_id, "title": column_title})
+            # Handle new configuration format (list of objects)
+            elif isinstance(kanban_config, list):
+                self.current_columns = kanban_config
+            
+            # If no valid configuration, use defaults
+            if not self.current_columns:
+                self.current_columns = [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ]
         
-        if not self.current_columns:
-            # Fallback to default columns
-            self.current_columns = [
-                {"id": "todo", "title": "To Do"},
-                {"id": "in_progress", "title": "In Progress"},
-                {"id": "done", "title": "Done"}
-            ]
+        # Columns container
+        self.columns_container = QFrame()
+        self.columns_layout = QVBoxLayout()
+        self.columns_container.setLayout(self.columns_layout)
+        layout.addWidget(self.columns_container)
         
-        # Create a form container with scrollable area
-        self.form_layout = QFormLayout()
-        form_container = QFrame()
-        form_container.setLayout(self.form_layout)
-        
-        # Add existing column inputs
-        self.column_inputs = []
-        for index, column in enumerate(self.current_columns):
-            self.addColumnInput(column, index)
-        
-        layout.addWidget(form_container)
-        
-        # Add note about maximum columns
-        max_note = QLabel("Note: Maximum 5 columns allowed")
-        layout.addWidget(max_note)
+        # Build form
+        self.rebuildColumnForm()
         
         # Add buttons for adding/removing columns
-        buttons_layout = QHBoxLayout()
+        btn_layout = QHBoxLayout()
         
-        add_btn = QPushButton("Add Column")
-        add_btn.clicked.connect(self.addColumn)
-        buttons_layout.addWidget(add_btn)
+        self.add_column_btn = QPushButton("Add Column")
+        self.add_column_btn.clicked.connect(self.addColumn)
+        btn_layout.addWidget(self.add_column_btn)
         
-        remove_btn = QPushButton("Remove Last Column")
-        remove_btn.clicked.connect(self.removeColumn)
-        buttons_layout.addWidget(remove_btn)
+        # Disable the add button if we already have 5 columns
+        self.add_column_btn.setEnabled(len(self.current_columns) < 5)
         
-        layout.addLayout(buttons_layout)
+        layout.addLayout(btn_layout)
+        
+        # Add note about column limitations
+        note = QLabel("Note: You need at least 3 columns and can have up to 5 columns.")
+        note.setStyleSheet("color: #666666; font-style: italic;")
+        layout.addWidget(note)
         
         # Add buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.saveColumnTitles)
-        button_box.rejected.connect(dialog.reject)
+        button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
-        
-        # Store dialog reference
-        self.columns_dialog = dialog
-        dialog.exec_()
     
     def addColumnInput(self, column, index=None):
         """Add a column input to the form"""
-        column_id = column.get("id")
-        column_title = column.get("title")
-        
+        row_widget = QFrame()
         row_layout = QHBoxLayout()
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_widget.setLayout(row_layout)
         
-        # Create label and input
-        label = QLabel(f"{column_id.capitalize()}:")
-        input_field = QLineEdit(column_title)
+        # Text input
+        column_input = QLineEdit()
+        column_input.setText(column["title"])
+        column_input.setPlaceholderText("Column Title")
+        row_layout.addWidget(column_input)
         
-        # Add to layout
-        row_layout.addWidget(label)
-        row_layout.addWidget(input_field)
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(2)
         
-        # Add up/down buttons for reordering
-        from PyQt5.QtWidgets import QPushButton
-        from PyQt5.QtGui import QIcon
-        from PyQt5.QtCore import QSize
+        # Move up button
+        move_up_btn = QPushButton("↑")
+        move_up_btn.setFixedWidth(30)
+        move_up_btn.clicked.connect(lambda: self.moveColumnUp(row_widget))
+        buttons_layout.addWidget(move_up_btn)
         
-        button_layout = QHBoxLayout()
+        # Move down button
+        move_down_btn = QPushButton("↓")
+        move_down_btn.setFixedWidth(30)
+        move_down_btn.clicked.connect(lambda: self.moveColumnDown(row_widget))
+        buttons_layout.addWidget(move_down_btn)
         
-        up_btn = QPushButton("↑")
-        up_btn.setFixedSize(30, 25)
-        up_btn.setToolTip("Move column up")
-        up_btn.clicked.connect(lambda: self.moveColumnUp(column_id))
+        # Remove button (only enabled if we have more than 3 columns)
+        remove_btn = QPushButton("×")
+        remove_btn.setFixedWidth(30)
+        remove_btn.clicked.connect(lambda: self.removeColumn(row_widget))
+        remove_btn.setEnabled(len(self.current_columns) > 3)
+        buttons_layout.addWidget(remove_btn)
         
-        down_btn = QPushButton("↓")
-        down_btn.setFixedSize(30, 25)
-        down_btn.setToolTip("Move column down")
-        down_btn.clicked.connect(lambda: self.moveColumnDown(column_id))
+        row_layout.addLayout(buttons_layout)
         
-        button_layout.addWidget(up_btn)
-        button_layout.addWidget(down_btn)
-        button_layout.setSpacing(1)
+        # Store references to widgets
+        row_widget.column_input = column_input
+        row_widget.column_id = column["id"]
+        row_widget.move_up_btn = move_up_btn
+        row_widget.move_down_btn = move_down_btn
+        row_widget.remove_btn = remove_btn
         
-        row_layout.addLayout(button_layout)
-        
-        # Add the row to form
-        if index is not None and index < self.form_layout.rowCount():
-            self.form_layout.insertRow(index, row_layout)
+        # Insert at position or add to end
+        if index is not None and index < self.columns_layout.count():
+            self.columns_layout.insertWidget(index, row_widget)
         else:
-            self.form_layout.addRow(row_layout)
+            self.columns_layout.addWidget(row_widget)
+            
+        return row_widget
+    
+    def rebuildColumnForm(self):
+        """Rebuild the column form based on current columns"""
+        # Clear existing form
+        while self.columns_layout.count():
+            widget = self.columns_layout.takeAt(0).widget()
+            if widget:
+                widget.deleteLater()
         
-        # Store the input field and buttons
-        self.column_inputs.append({
-            "id": column_id, 
-            "input": input_field,
-            "up_btn": up_btn,
-            "down_btn": down_btn
-        })
+        # Add inputs for each column
+        for column in self.current_columns:
+            self.addColumnInput(column)
+        
+        # Update button states
+        self.updateButtonStates()
+    
+    def updateButtonStates(self):
+        """Update button states based on current columns"""
+        # Get all column rows
+        column_rows = []
+        for i in range(self.columns_layout.count()):
+            widget = self.columns_layout.itemAt(i).widget()
+            if widget:
+                column_rows.append(widget)
+        
+        # Update move up/down buttons
+        for i, row in enumerate(column_rows):
+            # First row can't move up
+            row.move_up_btn.setEnabled(i > 0)
+            # Last row can't move down
+            row.move_down_btn.setEnabled(i < len(column_rows) - 1)
+            # Can only remove if we have more than 3 columns
+            row.remove_btn.setEnabled(len(column_rows) > 3)
+        
+        # Update add column button
+        self.add_column_btn.setEnabled(len(column_rows) < 5)
+    
+    def moveColumnUp(self, row_widget):
+        """Move a column up in the form"""
+        # Find index of row
+        index = -1
+        for i in range(self.columns_layout.count()):
+            if self.columns_layout.itemAt(i).widget() == row_widget:
+                index = i
+                break
+        
+        if index <= 0:
+            return  # Already at the top
+        
+        # Swap columns in the data
+        self.current_columns[index], self.current_columns[index-1] = self.current_columns[index-1], self.current_columns[index]
+        
+        # Rebuild form
+        self.rebuildColumnForm()
+    
+    def moveColumnDown(self, row_widget):
+        """Move a column down in the form"""
+        # Find index of row
+        index = -1
+        for i in range(self.columns_layout.count()):
+            if self.columns_layout.itemAt(i).widget() == row_widget:
+                index = i
+                break
+        
+        if index < 0 or index >= self.columns_layout.count() - 1:
+            return  # Already at the bottom or not found
+        
+        # Swap columns in the data
+        self.current_columns[index], self.current_columns[index+1] = self.current_columns[index+1], self.current_columns[index]
+        
+        # Rebuild form
+        self.rebuildColumnForm()
+    
+    def removeColumn(self, row_widget):
+        """Remove a column from the form"""
+        # Check that we have more than 3 columns
+        if self.columns_layout.count() <= 3:
+            return
+        
+        # Find index of row
+        index = -1
+        for i in range(self.columns_layout.count()):
+            if self.columns_layout.itemAt(i).widget() == row_widget:
+                index = i
+                break
+        
+        if index < 0:
+            return  # Not found
+        
+        # Remove from the data
+        self.current_columns.pop(index)
+        
+        # Rebuild form
+        self.rebuildColumnForm()
     
     def addColumn(self):
         """Add a new column to the form"""
-        if len(self.column_inputs) >= 5:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Maximum Columns", 
-                              "You can have a maximum of 5 columns.")
+        # Check that we have less than 5 columns
+        if self.columns_layout.count() >= 5:
             return
         
-        # Generate a unique ID
-        column_id = f"column_{len(self.column_inputs) + 1}"
-        column_title = f"New Column {len(self.column_inputs) + 1}"
+        # Create a unique ID for the new column
+        import uuid
+        new_id = str(uuid.uuid4())[:8]
         
-        # Add to current columns
-        new_column = {"id": column_id, "title": column_title}
-        self.current_columns.append(new_column)
+        # Add to the data
+        self.current_columns.append({"id": new_id, "title": "New Column"})
         
-        # Add to form
-        self.addColumnInput(new_column)
-    
-    def removeColumn(self):
-        """Remove the last column"""
-        if len(self.column_inputs) <= 3:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Minimum Columns", 
-                              "You must have at least 3 columns.")
-            return
-        
-        # Get the last column index
-        last_index = len(self.column_inputs) - 1
-        
-        # Remove the last input and its widgets
-        last_column = self.column_inputs[last_index]
-        last_column["input"].setParent(None)
-        last_column["up_btn"].setParent(None)
-        last_column["down_btn"].setParent(None)
-        
-        # Remove from inputs
-        self.column_inputs.pop()
-        
-        # Remove from current columns
-        self.current_columns.pop()
-        
-        # Remove the last row from form
-        if self.form_layout.rowCount() > 0:
-            # Get the layout at the last row
-            row_index = self.form_layout.rowCount() - 1
-            layout_item = self.form_layout.itemAt(row_index, QFormLayout.SpanningRole)
-            
-            if layout_item:
-                # Remove all widgets from the layout
-                layout = layout_item.layout()
-                if layout:
-                    while layout.count():
-                        item = layout.takeAt(0)
-                        widget = item.widget()
-                        if widget:
-                            widget.setParent(None)
-                        sublayout = item.layout()
-                        if sublayout:
-                            while sublayout.count():
-                                subitem = sublayout.takeAt(0)
-                                subwidget = subitem.widget()
-                                if subwidget:
-                                    subwidget.setParent(None)
-            
-            # Remove the row
-            self.form_layout.removeRow(row_index)
+        # Rebuild form
+        self.rebuildColumnForm()
     
     def saveColumnTitles(self):
-        """Save the custom column titles to config and update the UI."""
-        from config import Config
+        """Save column titles from the form"""
+        # Update column titles from the form
+        for i in range(self.columns_layout.count()):
+            widget = self.columns_layout.itemAt(i).widget()
+            if widget:
+                self.current_columns[i]["title"] = widget.column_input.text()
         
-        # Get the current configuration
-        config = Config.load_config()
+        # Save to program-specific configuration
+        self.db.save_program_kanban_config(self.program_id, self.current_columns)
         
-        # Update column configuration
-        new_columns = []
-        for column_data in self.column_inputs:
-            column_id = column_data["id"]
-            column_title = column_data["input"].text()
-            new_columns.append({"id": column_id, "title": column_title})
-        
-        config["kanban_columns"] = new_columns
-        
-        # Save the updated configuration
-        Config.save_config(config)
-        
-        # Update the column titles in the UI
-        self.createColumns()
-        
-        # Reload tasks
-        self.loadTasks()
+        # Update the Kanban board UI
+        self.kanban_board.createColumns()
+        self.kanban_board.loadTasks()
         
         # Close the dialog
-        self.columns_dialog.accept()
+        self.accept()
         
         # Inform the user
         from PyQt5.QtWidgets import QMessageBox
         QMessageBox.information(self, "Settings Saved", 
                                "Kanban board columns have been updated.")
-    
-    def moveColumnUp(self, column_id):
-        """Move the column up in order"""
-        # Find the column index
-        for index, column in enumerate(self.column_inputs):
-            if column["id"] == column_id:
-                if index > 0:  # Not already at the top
-                    # Swap in the column_inputs list
-                    self.column_inputs[index], self.column_inputs[index - 1] = (
-                        self.column_inputs[index - 1], self.column_inputs[index]
-                    )
-                    
-                    # Swap in the current_columns list
-                    self.current_columns[index], self.current_columns[index - 1] = (
-                        self.current_columns[index - 1], self.current_columns[index]
-                    )
-                    
-                    # Rebuild the form
-                    self.rebuildColumnForm()
-                break
-    
-    def moveColumnDown(self, column_id):
-        """Move the column down in order"""
-        # Find the column index
-        for index, column in enumerate(self.column_inputs):
-            if column["id"] == column_id:
-                if index < len(self.column_inputs) - 1:  # Not already at the bottom
-                    # Swap in the column_inputs list
-                    self.column_inputs[index], self.column_inputs[index + 1] = (
-                        self.column_inputs[index + 1], self.column_inputs[index]
-                    )
-                    
-                    # Swap in the current_columns list
-                    self.current_columns[index], self.current_columns[index + 1] = (
-                        self.current_columns[index + 1], self.current_columns[index]
-                    )
-                    
-                    # Rebuild the form
-                    self.rebuildColumnForm()
-                break
-    
-    def rebuildColumnForm(self):
-        """Rebuild the form layout with the current column order"""
-        # Save the current values
-        current_values = {}
-        for column in self.column_inputs:
-            current_values[column["id"]] = column["input"].text()
-        
-        # Clear the form layout
-        while self.form_layout.rowCount() > 0:
-            # Get the layout at row 0
-            layout_item = self.form_layout.itemAt(0, QFormLayout.SpanningRole)
-            if layout_item:
-                # Remove all widgets from the layout
-                layout = layout_item.layout()
-                if layout:
-                    while layout.count():
-                        item = layout.takeAt(0)
-                        widget = item.widget()
-                        if widget:
-                            widget.setParent(None)
-                        sublayout = item.layout()
-                        if sublayout:
-                            while sublayout.count():
-                                subitem = sublayout.takeAt(0)
-                                subwidget = subitem.widget()
-                                if subwidget:
-                                    subwidget.setParent(None)
-            
-            # Remove the row
-            self.form_layout.removeRow(0)
-        
-        # Reset column_inputs
-        self.column_inputs = []
-        
-        # Rebuild the form with the new order
-        for column in self.current_columns:
-            column_id = column.get("id")
-            column_title = current_values.get(column_id, column.get("title"))
-            column_data = {"id": column_id, "title": column_title}
-            self.addColumnInput(column_data)
 
 
 # Import needed for drag and drop

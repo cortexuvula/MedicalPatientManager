@@ -1,5 +1,5 @@
-import json
 import os
+import json
 
 class Config:
     """Configuration manager for the Medical Patient Manager application."""
@@ -71,3 +71,52 @@ class Config:
         """Get the database file path."""
         config = cls.load_config()
         return config.get("db_file")
+        
+    @classmethod
+    def save_remembered_credentials(cls, username, password):
+        """Save remembered username and password for auto-login.
+        
+        Note: Password is stored with basic encryption - not secure for highly sensitive systems.
+        """
+        import base64
+        config = cls.load_config()
+        config["remembered_username"] = username
+        
+        # Basic encryption (not truly secure, but better than plaintext)
+        if password:
+            encoded_password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
+            config["remembered_password"] = encoded_password
+        
+        return cls.save_config(config)
+    
+    @classmethod
+    def clear_remembered_credentials(cls):
+        """Clear any remembered login credentials."""
+        config = cls.load_config()
+        if "remembered_username" in config:
+            del config["remembered_username"]
+        if "remembered_password" in config:
+            del config["remembered_password"]
+        return cls.save_config(config)
+    
+    @classmethod
+    def get_remembered_credentials(cls):
+        """Get the remembered username and password if any.
+        
+        Returns:
+            tuple: (username, password) or ("", "") if none saved
+        """
+        import base64
+        config = cls.load_config()
+        username = config.get("remembered_username", "")
+        encoded_password = config.get("remembered_password", "")
+        
+        password = ""
+        if encoded_password:
+            try:
+                password = base64.b64decode(encoded_password.encode('utf-8')).decode('utf-8')
+            except:
+                # If there's any error decoding, return empty password
+                password = ""
+                
+        return (username, password)

@@ -176,8 +176,20 @@ class LoginDialog(QDialog):
         self.login_button.clicked.connect(self.login)
         login_layout.addWidget(self.login_button)
         
-        # Add login tab
-        self.tab_widget.addTab(login_widget, "Login")
+        # Load remembered username if it exists
+        from config import Config
+        remembered_username, remembered_password = Config.get_remembered_credentials()
+        if remembered_username:
+            self.login_username.setText(remembered_username)
+            if remembered_password:
+                self.login_password.setText(remembered_password)
+            self.remember_me.setChecked(True)
+            # Set focus to password field if username is pre-filled but no password
+            if not remembered_password:
+                self.login_password.setFocus()
+            else:
+                # If both fields are pre-filled, focus on the login button
+                self.login_button.setFocus()
         
         # Register tab
         register_widget = QWidget()
@@ -222,6 +234,9 @@ class LoginDialog(QDialog):
         self.register_button = QPushButton("Register")
         self.register_button.clicked.connect(self.register)
         register_layout.addWidget(self.register_button)
+        
+        # Add login tab
+        self.tab_widget.addTab(login_widget, "Login")
         
         # Add register tab
         self.tab_widget.addTab(register_widget, "Register")
@@ -280,6 +295,12 @@ class LoginDialog(QDialog):
                         role=user_data.get('role', 'provider')
                     )
                     
+                    # Save or clear remembered credentials based on checkbox
+                    if self.remember_me.isChecked():
+                        Config.save_remembered_credentials(username, password)
+                    else:
+                        Config.clear_remembered_credentials()
+                    
                     # Emit signal and close dialog
                     self.userAuthenticated.emit(user)
                     self.accept()
@@ -302,6 +323,12 @@ class LoginDialog(QDialog):
         if user and verify_password(password, user.password_hash):
             # Authentication successful - record successful attempt
             login_tracker.record_attempt(username, True)
+            
+            # Save or clear remembered credentials based on checkbox
+            if self.remember_me.isChecked():
+                Config.save_remembered_credentials(username, password)
+            else:
+                Config.clear_remembered_credentials()
             
             # Log the successful login event
             from audit_logger import AuditLogger

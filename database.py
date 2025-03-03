@@ -164,6 +164,17 @@ class Database:
             )
             ''')
             
+            # Create program_kanban_config table for storing patient-specific column configurations
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS program_kanban_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                program_id INTEGER,
+                column_config TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (program_id) REFERENCES programs (id) ON DELETE CASCADE
+            )
+            ''')
+            
             # Create an admin user if no users exist
             cursor.execute("SELECT COUNT(*) FROM users")
             user_count = cursor.fetchone()[0]
@@ -1968,3 +1979,101 @@ class Database:
         except:
             # Ignore errors during cleanup
             pass
+    
+    # Program Kanban Configuration methods
+    def get_program_kanban_config(self, program_id):
+        """Get kanban column configuration for a specific program.
+        
+        Returns a list of column configuration objects or None if not found."""
+        if self.mode == "remote":
+            try:
+                response = self.api_client.get_program_kanban_config(program_id)
+                if 'error' in response:
+                    print(f"Error getting program kanban config from API: {response['error']}")
+                    return None
+                
+                if 'config' in response:
+                    return response['config']
+                
+                return None
+            except Exception as e:
+                print(f"Error in remote get_program_kanban_config: {e}")
+                return None
+        
+        try:
+            if not self.check_connection():
+                return None
+                
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT column_config FROM program_kanban_config WHERE program_id = ?",
+                (program_id,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                import json
+                return json.loads(result[0])
+            else:
+                # Return the default configuration if no program-specific config exists
+                return self.config.get("kanban_columns", [
+                    {"id": "todo", "title": "To Do"},
+                    {"id": "in_progress", "title": "In Progress"},
+                    {"id": "done", "title": "Done"}
+                ])
+        except sqlite3.Error as e:
+            print(f"Error getting program kanban config: {e}")
+            return None
+    
+    def save_program_kanban_config(self, program_id, column_config):
+        """Save kanban column configuration for a specific program.
+        
+        Args:
+            program_id: ID of the program
+            column_config: List of column configuration objects
+            
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        if self.mode == "remote":
+            try:
+                response = self.api_client.save_program_kanban_config(program_id, column_config)
+                return 'success' in response and response['success']
+            except Exception as e:
+                print(f"Error in remote save_program_kanban_config: {e}")
+                return False
+        
+        try:
+            if not self.check_connection():
+                return False
+            
+            import json
+            # Convert column_config to JSON string
+            config_json = json.dumps(column_config)
+            
+            cursor = self.conn.cursor()
+            # Check if config already exists for this program
+            cursor.execute(
+                "SELECT id FROM program_kanban_config WHERE program_id = ?",
+                (program_id,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                # Update existing config
+                cursor.execute(
+                    "UPDATE program_kanban_config SET column_config = ?, updated_at = CURRENT_TIMESTAMP WHERE program_id = ?",
+                    (config_json, program_id)
+                )
+            else:
+                # Insert new config
+                cursor.execute(
+                    "INSERT INTO program_kanban_config (program_id, column_config) VALUES (?, ?)",
+                    (program_id, config_json)
+                )
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error saving program kanban config: {e}")
+            return False

@@ -4,16 +4,22 @@
     "db_file": "patient_manager.db",
     "kanban_columns": [
         {
-            "id": "todo",
-            "title": "To Do1"
+            "id": "done",
+            "title": "Done"
         },
         {
             "id": "in_progress",
             "title": "In Progress"
         },
         {
-            "id": "done",
-            "title": "Done"
+            "id": "column_4",
+            "title": "New Column 4"
+        },
+        {
+            "id": "todo",
+            "title": "To Do1"
         }
-    ]
+    ],
+    "remembered_username": "admin",
+    "remembered_password": "QWRtaW5AMTIz"
 }
