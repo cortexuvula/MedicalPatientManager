@@ -30,12 +30,13 @@ class Program:
 class Task:
     """Model class for tasks within a program."""
     
-    def __init__(self, name="", description="", status="To Do", program_id=None, id=None):
+    def __init__(self, name="", description="", status="To Do", program_id=None, id=None, order_index=0):
         self.id = id
         self.name = name
         self.description = description
         self.status = status
         self.program_id = program_id
+        self.order_index = order_index
     
     def __str__(self):
         return self.name

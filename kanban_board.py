@@ -21,7 +21,7 @@ class TaskWidget(QFrame):
         self.setLineWidth(1)
         self.setMinimumHeight(100)
         self.setMaximumHeight(150)
-        self.setAcceptDrops(False)
+        self.setAcceptDrops(True)  # Enable drops for vertical reordering
         
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -88,7 +88,10 @@ class TaskWidget(QFrame):
         
         drag = QDrag(self)
         mime_data = QMimeData()
-        mime_data.setText(str(self.task.id))
+        
+        # Include both task ID and type of drag (vertical or horizontal)
+        task_data = f"{self.task.id}:task"
+        mime_data.setText(task_data)
         drag.setMimeData(mime_data)
         
         # Create a pixmap representation of the widget for the drag
@@ -96,7 +99,50 @@ class TaskWidget(QFrame):
         drag.setPixmap(pixmap)
         drag.setHotSpot(event.pos())
         
+        # Start drag operation
         drag.exec_(Qt.MoveAction)
+    
+    def dragEnterEvent(self, event):
+        mime_data = event.mimeData()
+        if mime_data.hasText() and ":task" in mime_data.text():
+            event.acceptProposedAction()
+    
+    def dragMoveEvent(self, event):
+        mime_data = event.mimeData()
+        if mime_data.hasText() and ":task" in mime_data.text():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        mime_data = event.mimeData()
+        if mime_data.hasText() and ":task" in mime_data.text():
+            dragged_task_id = int(mime_data.text().split(":", 1)[0])
+            
+            # Don't process if dropped on itself
+            if dragged_task_id == self.task.id:
+                event.acceptProposedAction()
+                return
+            
+            # Find the parent KanbanColumn
+            parent = self.parent()
+            while parent and not isinstance(parent, KanbanColumn):
+                parent = parent.parent()
+            
+            if parent:
+                # Find the position of this task in the column
+                tasks_layout = parent.tasks_layout
+                for i in range(tasks_layout.count()):
+                    if tasks_layout.itemAt(i).widget() == self:
+                        # Determine whether to insert above or below this task
+                        drop_y = event.pos().y()
+                        if drop_y < self.height() / 2:
+                            # Drop above this task
+                            parent.taskReordered.emit(dragged_task_id, i)
+                        else:
+                            # Drop below this task
+                            parent.taskReordered.emit(dragged_task_id, i + 1)
+                        break
+            
+            event.acceptProposedAction()
     
     def editTask(self):
         # Find the parent KanbanColumn
@@ -121,6 +167,7 @@ class KanbanColumn(QWidget):
     """Widget representing a column in the Kanban board."""
     taskDropped = pyqtSignal(int, str)  # Task ID, new status
     columnMoved = pyqtSignal(str, int)  # Column ID, new position
+    taskReordered = pyqtSignal(int, int)  # Task ID, new position
     
     def __init__(self, title, status, parent=None):
         super().__init__(parent)
@@ -194,7 +241,7 @@ class KanbanColumn(QWidget):
             }
         """)
         
-        # Install event filter for the header to handle dragging
+        # Install event filter for the header to handle mouse events for dragging
         header_widget.installEventFilter(self)
     
     def eventFilter(self, obj, event):
@@ -243,9 +290,16 @@ class KanbanColumn(QWidget):
             if text.startswith("kanban_column:"):
                 # This is a column being dragged
                 event.acceptProposedAction()
-            else:
+            elif ":task" in text:
                 # This is a task being dragged
                 event.acceptProposedAction()
+            else:
+                # Legacy support for old format (just task ID)
+                event.acceptProposedAction()
+    
+    def dragMoveEvent(self, event):
+        # Accept drag move events to enable proper drop positioning
+        event.acceptProposedAction()
     
     def dropEvent(self, event):
         mime_data = event.mimeData()
@@ -263,60 +317,50 @@ class KanbanColumn(QWidget):
                             # Emit signal to reorder columns
                             self.columnMoved.emit(dragged_column_id, i)
                             break
+            elif ":task" in text:
+                # Extract task ID
+                task_id = int(text.split(":", 1)[0])
+                
+                # If dropped directly on the column (not on a task)
+                # Find the nearest task based on drop position
+                drop_position = event.pos().y()
+                insert_index = 0  # Default to top position
+                
+                # Find the index where the task should be inserted
+                for i in range(self.tasks_layout.count()):
+                    widget = self.tasks_layout.itemAt(i).widget()
+                    widget_pos = widget.mapTo(self, QPoint(0, 0)).y()
+                    widget_height = widget.height()
+                    widget_center = widget_pos + widget_height / 2
+                    
+                    if drop_position < widget_center:
+                        # Found the position - drop before this widget
+                        break
+                    insert_index = i + 1
+                
+                # Handle the drop - either status change or reordering
+                source_task = None
+                for column in self.parent().findChildren(KanbanColumn):
+                    for i in range(column.tasks_layout.count()):
+                        task_widget = column.tasks_layout.itemAt(i).widget()
+                        if task_widget and task_widget.task.id == task_id:
+                            source_task = task_widget.task
+                            break
+                    if source_task:
+                        break
+                
+                if source_task and source_task.status != self.status:
+                    # Status change (moved to different column)
+                    self.taskDropped.emit(task_id, self.status)
+                else:
+                    # Reordering within the same column
+                    self.taskReordered.emit(task_id, insert_index)
             else:
-                # This is a task being dropped
-                task_id = int(event.mimeData().text())
+                # Legacy support for old format (just task ID)
+                task_id = int(text)
                 self.taskDropped.emit(task_id, self.status)
         
         event.acceptProposedAction()
-
-
-class TaskDialog(QDialog):
-    """Dialog for adding or editing a task."""
-    
-    def __init__(self, task=None, parent=None):
-        super().__init__(parent)
-        self.task = task
-        self.initUI()
-    
-    def initUI(self):
-        self.setWindowTitle("Add Task" if not self.task else "Edit Task")
-        self.setMinimumWidth(400)
-        
-        layout = QFormLayout()
-        self.setLayout(layout)
-        
-        # Task name
-        self.name_input = QLineEdit()
-        if self.task:
-            self.name_input.setText(self.task.name)
-        layout.addRow("Task Name:", self.name_input)
-        
-        # Task description
-        self.desc_input = QTextEdit()
-        if self.task and self.task.description:
-            self.desc_input.setText(self.task.description)
-        self.desc_input.setMaximumHeight(100)
-        layout.addRow("Description:", self.desc_input)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.reject)
-        
-        self.save_btn = QPushButton("Save")
-        self.save_btn.clicked.connect(self.accept)
-        
-        button_layout.addWidget(self.cancel_btn)
-        button_layout.addWidget(self.save_btn)
-        layout.addRow("", button_layout)
-    
-    def getTaskData(self):
-        """Get the task data from the dialog."""
-        return {
-            "name": self.name_input.text(),
-            "description": self.desc_input.toPlainText()
-        }
 
 
 class KanbanBoard(QWidget):
@@ -417,6 +461,7 @@ class KanbanBoard(QWidget):
             self.columns_layout.addWidget(column)
             column.taskDropped.connect(self.onTaskDropped)
             column.columnMoved.connect(self.onColumnMoved)
+            column.taskReordered.connect(self.onTaskReordered)
     
     def loadTasks(self):
         """Load tasks from the database into the appropriate columns."""
@@ -478,6 +523,24 @@ class KanbanBoard(QWidget):
         """Update task status when dropped into a new column."""
         self.db.update_task_status(task_id, new_status)
         self.loadTasks()
+    
+    def onTaskReordered(self, task_id, new_position):
+        """Update task order when reordered within a column."""
+        # Find the task to get its status and program_id
+        task = None
+        for column in self.columns.values():
+            for i in range(column.tasks_layout.count()):
+                task_widget = column.tasks_layout.itemAt(i).widget()
+                if task_widget and task_widget.task.id == task_id:
+                    task = task_widget.task
+                    break
+            if task:
+                break
+        
+        if task:
+            # Update the task order in the database
+            self.db.reorder_tasks(self.program_id, task.status, task_id, new_position)
+            self.loadTasks()
     
     def onColumnMoved(self, column_id, new_position):
         """Update column order when a column is moved."""
@@ -580,6 +643,54 @@ class KanbanBoard(QWidget):
         self.createColumns()
         self.loadTasks()
         return True
+
+
+class TaskDialog(QDialog):
+    """Dialog for adding or editing a task."""
+    
+    def __init__(self, task=None, parent=None):
+        super().__init__(parent)
+        self.task = task
+        self.initUI()
+    
+    def initUI(self):
+        self.setWindowTitle("Add Task" if not self.task else "Edit Task")
+        self.setMinimumWidth(400)
+        
+        layout = QFormLayout()
+        self.setLayout(layout)
+        
+        # Task name
+        self.name_input = QLineEdit()
+        if self.task:
+            self.name_input.setText(self.task.name)
+        layout.addRow("Task Name:", self.name_input)
+        
+        # Task description
+        self.desc_input = QTextEdit()
+        if self.task and self.task.description:
+            self.desc_input.setText(self.task.description)
+        self.desc_input.setMaximumHeight(100)
+        layout.addRow("Description:", self.desc_input)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self.accept)
+        
+        button_layout.addWidget(self.cancel_btn)
+        button_layout.addWidget(self.save_btn)
+        layout.addRow("", button_layout)
+    
+    def getTaskData(self):
+        """Get the task data from the dialog."""
+        return {
+            "name": self.name_input.text(),
+            "description": self.desc_input.toPlainText()
+        }
 
 
 class ColumnSettingsDialog(QDialog):

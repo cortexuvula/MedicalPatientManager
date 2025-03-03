@@ -129,10 +129,14 @@ class Database:
                 description TEXT,
                 status TEXT NOT NULL,
                 program_id INTEGER NOT NULL,
+                order_index INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (program_id) REFERENCES programs (id) ON DELETE CASCADE
             )
             ''')
+            
+            # Check if order_index column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'order_index', 'INTEGER DEFAULT 0')
             
             # Create audit_log table
             cursor.execute('''
@@ -339,9 +343,11 @@ class Database:
         else:
             try:
                 # Check connection and reconnect if needed
-                if not self.check_connection():
-                    print(f"Error: Database connection lost and couldn't be re-established")
-                    return None
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return None
                     
                 cursor = self.conn.cursor()
                 cursor.execute(
@@ -411,9 +417,11 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return []
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return []
                 
             cursor = self.conn.cursor()
             cursor.execute("SELECT * FROM users ORDER BY username")
@@ -529,9 +537,11 @@ class Database:
         else:
             try:
                 # Ensure database connection is active
-                if not self.check_connection():
-                    print("Error: Could not establish database connection")
-                    return None
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return None
                 
                 cursor = self.conn.cursor()
                 cursor.execute(
@@ -572,9 +582,11 @@ class Database:
         else:
             try:
                 # Ensure database connection is active
-                if not self.check_connection():
-                    print("Error: Could not establish database connection")
-                    return []
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return []
                 
                 query = "SELECT * FROM patients"
                 params = []
@@ -626,9 +638,11 @@ class Database:
         else:
             try:
                 # Ensure database connection is active
-                if not self.check_connection():
-                    print("Error: Could not establish database connection")
-                    return None
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return None
                 
                 cursor = self.conn.cursor()
                 cursor.execute('''
@@ -818,9 +832,11 @@ class Database:
         else:
             try:
                 # Ensure database connection is active
-                if not self.check_connection():
-                    print("Error: Could not establish database connection")
-                    return False
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return False
                 
                 cursor = self.conn.cursor()
                 cursor.execute(
@@ -845,9 +861,11 @@ class Database:
         else:
             try:
                 # Ensure database connection is active
-                if not self.check_connection():
-                    print("Error: Could not establish database connection")
-                    return False
+                if not self.conn:
+                    success = self._connect()
+                    if not success:
+                        print("Failed to connect to the database")
+                        return False
                 
                 cursor = self.conn.cursor()
                 cursor.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
@@ -968,9 +986,11 @@ class Database:
                 
         # In local mode, use database
         try:
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return None
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return None
                 
             cursor = self.conn.cursor()
             cursor.execute("SELECT * FROM programs WHERE id = ?", (program_id,))
@@ -1012,9 +1032,11 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
             
             print(f"Database connection: {self.conn}")
             cursor = self.conn.cursor()
@@ -1048,9 +1070,11 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
                 
             cursor = self.conn.cursor()
             cursor.execute("DELETE FROM programs WHERE id = ?", (program_id,))
@@ -1087,13 +1111,33 @@ class Database:
                 return None
         
         try:
+            # Check connection and reconnect if needed
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return None
+            
+            # Calculate next order_index for this status in this program
             cursor = self.conn.cursor()
-            cursor.execute(
-                "INSERT INTO tasks (name, description, status, program_id) VALUES (?, ?, ?, ?)",
-                (task.name, task.description, task.status, task.program_id)
-            )
+            cursor.execute("""
+                SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order
+                FROM tasks 
+                WHERE program_id = ? AND status = ?
+            """, (task.program_id, task.status))
+            next_order = cursor.fetchone()['next_order']
+            
+            cursor.execute('''
+                INSERT INTO tasks (name, description, status, program_id, order_index)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (task.name, task.description, task.status, task.program_id, next_order))
+            
+            task_id = cursor.lastrowid
             self.conn.commit()
-            return cursor.lastrowid
+            
+            # Set the task ID
+            task.id = task_id
+            return task
         except sqlite3.Error as e:
             print(f"Error adding task: {e}")
             return None
@@ -1114,7 +1158,8 @@ class Database:
                             name=task_data.get('name', ''),
                             description=task_data.get('description', ''),
                             status=task_data.get('status', 'To Do'),
-                            program_id=task_data.get('program_id', program_id)
+                            program_id=task_data.get('program_id', program_id),
+                            order_index=task_data.get('order_index', 0)
                         )
                         tasks.append(task)
                     
@@ -1131,14 +1176,19 @@ class Database:
         # In local mode, use database
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT * FROM tasks WHERE program_id = ? ORDER BY created_at", (program_id,))
+            cursor.execute("""
+                SELECT * FROM tasks 
+                WHERE program_id = ? 
+                ORDER BY status, order_index, created_at
+            """, (program_id,))
             rows = cursor.fetchall()
             return [Task(
                 id=row['id'],
                 name=row['name'],
                 description=row['description'],
                 status=row['status'],
-                program_id=row['program_id']
+                program_id=row['program_id'],
+                order_index=row['order_index'] if 'order_index' in row.keys() else 0
             ) for row in rows]
         except sqlite3.Error as e:
             print(f"Error getting tasks: {e}")
@@ -1174,9 +1224,11 @@ class Database:
                 
         # In local mode, use database
         try:
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return None
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return None
                 
             cursor = self.conn.cursor()
             cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -1187,7 +1239,8 @@ class Database:
                     name=row['name'],
                     description=row['description'],
                     status=row['status'],
-                    program_id=row['program_id']
+                    program_id=row['program_id'],
+                    order_index=row['order_index'] if 'order_index' in row.keys() else 0
                 )
             return None
         except sqlite3.Error as e:
@@ -1203,7 +1256,8 @@ class Database:
                     'name': task.name,
                     'description': task.description,
                     'status': task.status,
-                    'program_id': task.program_id
+                    'program_id': task.program_id,
+                    'order_index': task.order_index
                 }
                 
                 print(f"Updating task {task.id} via API")
@@ -1221,14 +1275,16 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
                 
             cursor = self.conn.cursor()
             cursor.execute(
-                "UPDATE tasks SET name = ?, description = ?, status = ? WHERE id = ?",
-                (task.name, task.description, task.status, task.id)
+                "UPDATE tasks SET name = ?, description = ?, status = ?, order_index = ? WHERE id = ?",
+                (task.name, task.description, task.status, task.order_index, task.id)
             )
             self.conn.commit()
             return True
@@ -1253,7 +1309,8 @@ class Database:
                     'name': task.name,
                     'description': task.description,
                     'status': new_status,
-                    'program_id': task.program_id
+                    'program_id': task.program_id,
+                    'order_index': task.order_index
                 }
                 
                 print(f"Updating task {task_id} status to {new_status} via API")
@@ -1274,16 +1331,103 @@ class Database:
             if not self.check_connection():
                 print("Error: Database connection lost and couldn't be re-established")
                 return False
+            
+            # Get highest order_index in the target column    
+            cursor = self.conn.cursor()
+            task = self.get_task_by_id(task_id)
+            if task:
+                cursor.execute("""
+                    SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order
+                    FROM tasks 
+                    WHERE program_id = ? AND status = ?
+                """, (task.program_id, new_status))
+                next_order = cursor.fetchone()['next_order']
+                
+                cursor.execute(
+                    "UPDATE tasks SET status = ?, order_index = ? WHERE id = ?",
+                    (new_status, next_order, task_id)
+                )
+                self.conn.commit()
+                return True
+            return False
+        except sqlite3.Error as e:
+            print(f"Error updating task status: {e}")
+            return False
+    
+    def update_task_order(self, task_id, new_order_index):
+        """Update only the order of a task."""
+        try:
+            # Check connection and reconnect if needed
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
                 
             cursor = self.conn.cursor()
             cursor.execute(
-                "UPDATE tasks SET status = ? WHERE id = ?",
-                (new_status, task_id)
+                "UPDATE tasks SET order_index = ? WHERE id = ?",
+                (new_order_index, task_id)
             )
             self.conn.commit()
             return True
         except sqlite3.Error as e:
-            print(f"Error updating task status: {e}")
+            print(f"Error updating task order: {e}")
+            return False
+            
+    def reorder_tasks(self, program_id, status, task_id, new_position):
+        """Reorder tasks within a column."""
+        try:
+            # Check connection and reconnect if needed
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
+                
+            cursor = self.conn.cursor()
+            
+            # Get current task information
+            cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            task_row = cursor.fetchone()
+            if not task_row:
+                return False
+                
+            current_index = task_row['order_index']
+            
+            # Update the positions of all affected tasks
+            if new_position > current_index:
+                # Moving down - shift tasks in between up
+                cursor.execute("""
+                    UPDATE tasks 
+                    SET order_index = order_index - 1
+                    WHERE program_id = ? 
+                    AND status = ? 
+                    AND order_index > ? 
+                    AND order_index <= ?
+                """, (program_id, status, current_index, new_position))
+            else:
+                # Moving up - shift tasks in between down
+                cursor.execute("""
+                    UPDATE tasks 
+                    SET order_index = order_index + 1
+                    WHERE program_id = ? 
+                    AND status = ? 
+                    AND order_index >= ? 
+                    AND order_index < ?
+                """, (program_id, status, new_position, current_index))
+            
+            # Set the new position for the moved task
+            cursor.execute("""
+                UPDATE tasks 
+                SET order_index = ?
+                WHERE id = ?
+            """, (new_position, task_id))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error reordering tasks: {e}")
             return False
     
     def delete_task(self, task_id):
@@ -1306,9 +1450,11 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return False
                 
             cursor = self.conn.cursor()
             cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -1877,9 +2023,11 @@ class Database:
         # In local mode, use database
         try:
             # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return "Unknown User"
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    print("Failed to connect to the database")
+                    return "Unknown User"
                 
             cursor = self.conn.cursor()
             cursor.execute("SELECT name, username FROM users WHERE id = ?", (user_id,))
@@ -2001,8 +2149,10 @@ class Database:
                 return None
         
         try:
-            if not self.check_connection():
-                return None
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    return None
                 
             cursor = self.conn.cursor()
             cursor.execute(
@@ -2044,8 +2194,10 @@ class Database:
                 return False
         
         try:
-            if not self.check_connection():
-                return False
+            if not self.conn:
+                success = self._connect()
+                if not success:
+                    return False
             
             import json
             # Convert column_config to JSON string
