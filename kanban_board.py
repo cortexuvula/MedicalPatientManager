@@ -1,9 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QFrame, QInputDialog,
                              QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox,
-                             QTabWidget, QApplication, QDialogButtonBox)
+                             QTabWidget, QApplication, QDialogButtonBox, QComboBox, QSpinBox)
 from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QTimer, QSettings
 from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor
+import copy
 
 from models import Task, Program
 
@@ -246,9 +247,12 @@ class KanbanColumn(QWidget):
         self.add_btn.clicked.connect(self.addTask)
         layout.addWidget(self.add_btn)
         
-        # Set fixed width
-        self.setMinimumWidth(250)
-        self.setMaximumWidth(300)
+        # Set size policy to expand horizontally
+        from PyQt5.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Set minimum width to ensure column is usable
+        self.setMinimumWidth(200)
         
         # Set style
         self.setStyleSheet("""
@@ -311,7 +315,16 @@ class KanbanColumn(QWidget):
         self.title_label.setText(title)
     
     def addTask(self):
-        self.parent().addTask(self.status)
+        """Add a new task to this column by signalling the parent KanbanBoard."""
+        # Find the KanbanBoard in the parent widget hierarchy
+        parent = self.parent()
+        while parent and not isinstance(parent, KanbanBoard):
+            parent = parent.parent()
+            
+        if parent and isinstance(parent, KanbanBoard):
+            parent.addTask(self.status)
+        else:
+            print("Error: Could not find KanbanBoard parent")
     
     def addTaskWidget(self, task_widget):
         self.tasks_layout.addWidget(task_widget)
@@ -470,9 +483,15 @@ class KanbanBoard(QWidget):
         
         layout.addLayout(header_layout)
         
-        # Kanban columns
-        self.columns_layout = QHBoxLayout()
-        layout.addLayout(self.columns_layout)
+        # Kanban columns - use a widget container to better control the layout
+        columns_container = QWidget()
+        self.columns_layout = QHBoxLayout(columns_container)
+        self.columns_layout.setContentsMargins(0, 0, 0, 0)
+        self.columns_layout.setSpacing(10)  # Add some space between columns
+        self.columns_layout.setStretch(0, 1)  # Make columns stretch to fill available space
+        
+        # Add the container to the main layout - this will stretch to fill space
+        layout.addWidget(columns_container, 1)  # Give it a stretch factor of 1 to expand
         
         # Create columns
         self.createColumns()
@@ -530,7 +549,7 @@ class KanbanBoard(QWidget):
                 column.taskDoubleClicked.connect(self.editTask)  # Connect to taskDoubleClicked signal
                 column.taskAdded.connect(self.addTask)  # Connect to taskAdded signal
                 column.columnMoved.connect(self.onColumnMoved)
-                self.columns_layout.addWidget(column)
+                self.columns_layout.addWidget(column, 1)  # Add stretch factor of 1 to distribute space evenly
                 self.columns[config["id"]] = column
                 
             print(f"Created {len(self.columns)} columns")
@@ -832,11 +851,21 @@ class KanbanBoard(QWidget):
         self.createColumns()
         self.loadTasks()
         
-        # Inform the user
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Settings Saved", 
-                               "Kanban board columns have been updated.")
-    
+        # Handle tasks in deleted columns
+        # Move them to the first column if they were in a deleted column
+        if column_configs:
+            first_column_id = column_configs[0]["id"]
+            existing_column_ids = [config["id"] for config in column_configs]
+            
+            # Get all tasks for this program
+            program_tasks = self.db.get_tasks_by_program(self.program_id)
+            
+            # Find tasks that are in a column that no longer exists
+            for task in program_tasks:
+                if task.status not in existing_column_ids:
+                    # Move task to first column
+                    self.db.update_task_status(task.id, first_column_id)
+        
     def setConflictResolutionMode(self, mode):
         """Set the conflict resolution mode.
         
@@ -847,80 +876,66 @@ class KanbanBoard(QWidget):
             self.conflict_resolution_mode = mode
     
     def customizeColumns(self):
-        """Customize the column titles and structure."""
-        # Create the dialog
+        """Open a dialog to customize kanban board columns."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Customize Kanban Board")
-        dialog.setMinimumWidth(400)
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(400)
         
-        layout = QVBoxLayout()
-        dialog.setLayout(layout)
+        # Create tab widget for different customization options
+        tabs = QTabWidget()
         
-        # Create tab widget for different settings
-        tab_widget = QTabWidget()
-        layout.addWidget(tab_widget)
-        
-        # Columns Tab
+        # Columns tab
         columns_tab = QWidget()
         columns_layout = QVBoxLayout()
         columns_tab.setLayout(columns_layout)
         
-        # Get program-specific column configuration
+        # Get current column configurations
         column_configs = self.db.get_program_kanban_config(self.program_id)
         
-        # If no program-specific config exists, get from global config
-        if column_configs is None:
-            # Get column configuration from general settings
-            kanban_config = self.config.value("kanban_columns", [])
-            
-            # Handle old configuration format (dictionary with key-value pairs)
-            if isinstance(kanban_config, dict):
-                # Convert old format to new format
-                column_configs = [{"id": column_id, "title": kanban_config[column_id]} for column_id in kanban_config]
-            # Handle new configuration format (list of objects)
-            elif isinstance(kanban_config, list):
-                column_configs = kanban_config
-            
-            # If no valid configuration, use defaults
-            if not column_configs:
-                column_configs = [
-                    {"id": "todo", "title": "To Do"},
-                    {"id": "in_progress", "title": "In Progress"},
-                    {"id": "done", "title": "Done"}
-                ]
+        # Create a copy of the column configurations to work with
+        column_configs_copy = copy.deepcopy(column_configs)
         
-        # Create widgets for each column configuration
+        # List to keep track of column widgets
         column_widgets = []
-        for i, column_config in enumerate(column_configs):
-            column_id = column_config.get("id", f"column_{i}")
-            title = column_config.get("title", f"Column {i+1}")
-            
+        
+        # Create input fields for each column
+        for i, config in enumerate(column_configs_copy):
             row_layout = QHBoxLayout()
             
             # Column ID (read-only)
-            id_label = QLabel(f"ID: {column_id}")
+            id_label = QLabel(f"ID: {config['id']}")
             row_layout.addWidget(id_label)
             
             # Column Title (editable)
             title_label = QLabel("Title:")
             row_layout.addWidget(title_label)
             
-            title_edit = QLineEdit(title)
+            title_edit = QLineEdit(config["title"])
             row_layout.addWidget(title_edit)
             
             # Delete button
-            from PyQt5.QtWidgets import QPushButton
             delete_btn = QPushButton("Delete")
             delete_btn.setProperty("column_index", i)
-            delete_btn.clicked.connect(lambda checked, idx=i: self.deleteColumnFromCustomizeDialog(idx, column_configs))
+            delete_btn.clicked.connect(lambda checked, idx=i: self.deleteColumnFromCustomizeDialog(idx, column_configs_copy, column_widgets, columns_layout))
             row_layout.addWidget(delete_btn)
             
-            column_widgets.append({"id": column_id, "title_edit": title_edit})
-            
             columns_layout.addLayout(row_layout)
+            
+            column_widgets.append({
+                "id": config["id"],
+                "title_edit": title_edit
+            })
         
-        # Add columns tab
-        tab_widget.addTab(columns_tab, "Columns")
+        # Add "Add Column" button
+        add_column_layout = QHBoxLayout()
+        add_column_btn = QPushButton("Add Column")
+        add_column_btn.clicked.connect(lambda: self.addColumnFromCustomizeDialog(column_configs_copy, column_widgets, columns_layout))
+        add_column_layout.addWidget(add_column_btn)
+        columns_layout.addLayout(add_column_layout)
+        
+        # Add tab to tab widget
+        tabs.addTab(columns_tab, "Columns")
         
         # Concurrency Settings Tab
         concurrency_tab = QWidget()
@@ -931,8 +946,6 @@ class KanbanBoard(QWidget):
         conflict_mode_layout = QHBoxLayout()
         conflict_mode_label = QLabel("Conflict Resolution Mode:")
         conflict_mode_layout.addWidget(conflict_mode_label)
-        
-        from PyQt5.QtWidgets import QComboBox
         
         conflict_mode_combo = QComboBox()
         conflict_mode_combo.addItem("Last Writer Wins (Automatic)", "last_wins")
@@ -955,9 +968,6 @@ class KanbanBoard(QWidget):
         explanation.setWordWrap(True)
         concurrency_layout.addWidget(explanation)
         
-        # Add concurrency tab
-        tab_widget.addTab(concurrency_tab, "Concurrency Settings")
-        
         # Add spacer
         concurrency_layout.addStretch()
         
@@ -965,8 +975,6 @@ class KanbanBoard(QWidget):
         refresh_layout = QHBoxLayout()
         refresh_label = QLabel("Auto-refresh interval (seconds):")
         refresh_layout.addWidget(refresh_label)
-        
-        from PyQt5.QtWidgets import QSpinBox
         
         refresh_interval_spinner = QSpinBox()
         refresh_interval_spinner.setMinimum(1)
@@ -976,44 +984,74 @@ class KanbanBoard(QWidget):
         
         concurrency_layout.addLayout(refresh_layout)
         
-        # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
+        # Add concurrency tab
+        tabs.addTab(concurrency_tab, "Concurrency Settings")
         
-        # Execute dialog
-        if dialog.exec_():
-            # Process column configurations
-            updated_configs = []
-            for widget in column_widgets:
-                updated_configs.append({
-                    "id": widget["id"],
-                    "title": widget["title_edit"].text()
-                })
-            
-            # Save the program-specific column configuration
-            self.db.save_program_kanban_config(self.program_id, updated_configs)
-            
-            # Update conflict resolution mode
+        # Main dialog layout
+        dialog_layout = QVBoxLayout()
+        dialog_layout.addWidget(tabs)
+        
+        # Add OK and Cancel buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.saveColumnCustomizations(dialog, column_configs_copy, column_widgets, conflict_mode_combo, refresh_interval_spinner))
+        button_box.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(button_box)
+        
+        dialog.setLayout(dialog_layout)
+        dialog.exec_()
+    
+    def saveColumnCustomizations(self, dialog, column_configs, column_widgets, conflict_mode_combo=None, refresh_interval_spinner=None):
+        """Save column customizations from the dialog.
+        
+        Args:
+            dialog: The dialog to close after saving
+            column_configs: List of column configurations
+            column_widgets: List of column widget references
+            conflict_mode_combo: Conflict resolution mode dropdown
+            refresh_interval_spinner: Auto-refresh interval spinner
+        """
+        # Update column titles from the input fields
+        for i, config in enumerate(column_configs):
+            if i < len(column_widgets):
+                config["title"] = column_widgets[i]["title_edit"].text()
+        
+        # Save the updated configuration to the database
+        self.db.save_program_kanban_config(self.program_id, column_configs)
+        
+        # Update conflict resolution mode if provided
+        if conflict_mode_combo:
             new_mode = conflict_mode_combo.currentData()
             self.setConflictResolutionMode(new_mode)
-            
-            # Update refresh interval
+        
+        # Update refresh interval if provided
+        if refresh_interval_spinner:
             new_interval = refresh_interval_spinner.value() * 1000  # convert to milliseconds
             self.refresh_timer.setInterval(new_interval)
+        
+        # Recreate columns with the updated configuration
+        self.createColumns()
+        
+        # Reload tasks
+        self.loadTasks()
+        
+        # Handle tasks in deleted columns
+        # Move them to the first column if they were in a deleted column
+        if column_configs:
+            first_column_id = column_configs[0]["id"]
+            existing_column_ids = [config["id"] for config in column_configs]
             
-            # Recreate columns with new configuration
-            self.createColumns()
+            # Get all tasks for this program
+            program_tasks = self.db.get_tasks_by_program(self.program_id)
             
-            # Reload tasks
-            self.loadTasks()
-            
-            # Notify user
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(self, "Settings Saved", 
-                               "Kanban board settings have been updated.")
-    
+            # Find tasks that are in a column that no longer exists
+            for task in program_tasks:
+                if task.status not in existing_column_ids:
+                    # Move task to first column
+                    self.db.update_task_status(task.id, first_column_id)
+        
+        # Close the dialog
+        dialog.accept()
+        
     def editProgram(self):
         """Edit the program name."""
         name, ok = QInputDialog.getText(self, "Edit Program", 
@@ -1025,13 +1063,54 @@ class KanbanBoard(QWidget):
             if isinstance(parent, QTabWidget):
                 index = parent.indexOf(self)
                 parent.setTabText(index, name)
-
-    def deleteColumnFromCustomizeDialog(self, index, column_configs):
+                
+    def addColumnFromCustomizeDialog(self, column_configs, column_widgets, columns_layout):
+        """Add a new column from the column customization dialog."""
+        # Create a new column configuration
+        new_column_id = f"column_{len(column_configs) + 1}"
+        new_column_title = f"Column {len(column_configs) + 1}"
+        
+        # Add the new column configuration to the list
+        column_configs.append({"id": new_column_id, "title": new_column_title})
+        
+        # Create a new row for the column configuration
+        row_layout = QHBoxLayout()
+        
+        # Column ID (read-only)
+        id_label = QLabel(f"ID: {new_column_id}")
+        row_layout.addWidget(id_label)
+        
+        # Column Title (editable)
+        title_label = QLabel("Title:")
+        row_layout.addWidget(title_label)
+        
+        title_edit = QLineEdit(new_column_title)
+        row_layout.addWidget(title_edit)
+        
+        # Delete button
+        delete_btn = QPushButton("Delete")
+        delete_btn.setProperty("column_index", len(column_configs) - 1)
+        delete_btn.clicked.connect(lambda checked, idx=len(column_configs) - 1: self.deleteColumnFromCustomizeDialog(idx, column_configs, column_widgets, columns_layout))
+        row_layout.addWidget(delete_btn)
+        
+        column_widgets.append({"id": new_column_id, "title_edit": title_edit})
+        
+        # Insert the new row before the add button
+        # Remove the Add Column button and its layout which should be the last item
+        last_item_idx = columns_layout.count() - 1
+        last_item = columns_layout.itemAt(last_item_idx)
+        
+        # Add the new row before the add button
+        columns_layout.insertLayout(last_item_idx, row_layout)
+    
+    def deleteColumnFromCustomizeDialog(self, index, column_configs, column_widgets, columns_layout):
         """Delete a column from the kanban board.
         
         Args:
             index: Index of the column to delete
             column_configs: List of column configurations
+            column_widgets: List of column widget references
+            columns_layout: Layout containing the column widgets
         """
         # Check if we have enough columns to delete one
         if len(column_configs) <= 3:
@@ -1040,53 +1119,49 @@ class KanbanBoard(QWidget):
             return
             
         # Confirm with user
-        column_to_delete = column_configs[index]
-        
-        # Get tasks in this column directly from the database
-        program_tasks = self.db.get_tasks_by_program(self.program_id)
-        tasks_in_column = [task for task in program_tasks if task.status == column_to_delete["id"]]
-        
-        message = f"Are you sure you want to delete the column '{column_to_delete['title']}'?"
-        if tasks_in_column:
-            message += f"\n\nThis column contains {len(tasks_in_column)} tasks that will be moved to the first available column."
-        
-        confirm = QMessageBox.question(
-            self, 
-            "Confirm Column Deletion", 
-            message, 
-            QMessageBox.Yes | QMessageBox.No
-        )
+        confirm = QMessageBox.question(self, "Confirm Delete", 
+                                     f"Are you sure you want to delete the column '{column_configs[index]['title']}'?\n\n"
+                                     "Any tasks in this column will be moved to the first column.",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         
         if confirm == QMessageBox.Yes:
-            # Get the ID of the column being deleted
-            deleted_column_id = column_configs[index]["id"]
-            
-            # Remove the column from the configuration
+            # Remove the column from the configuration list
             column_configs.pop(index)
             
-            # Save the updated configuration
-            self.db.save_program_kanban_config(self.program_id, column_configs)
+            # Remove the corresponding widget from the list
+            if index < len(column_widgets):
+                column_widgets.pop(index)
             
-            # If there are tasks in the deleted column, move them to the first column
-            if column_configs and tasks_in_column:
-                first_column_id = column_configs[0]["id"]
+            # Find and remove the corresponding row from the dialog layout
+            # The row should be at the same index as the column in the config
+            # But we need to account for the Add Column button at the end
+            row_idx = index
+            row_item = columns_layout.itemAt(row_idx)
+            
+            if row_item and row_item.layout():
+                # Remove all widgets from the layout
+                row_layout = row_item.layout()
+                while row_layout.count():
+                    item = row_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
                 
-                # Update task statuses in database
-                for task in tasks_in_column:
-                    task.status = first_column_id
-                    self.db.update_task_status(task.id, first_column_id)
+                # Remove the layout itself
+                columns_layout.removeItem(row_item)
             
-            # Recreate columns with the updated configuration
-            self.createColumns()
-            
-            # Reload tasks to reflect the changes
-            self.loadTasks()
-            
-            # Close the customize columns dialog by finding and closing it
-            for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, QDialog) and widget.windowTitle() == "Customize Kanban Board":
-                    widget.close()
-                    break
+            # Update "column_index" property of remaining delete buttons
+            for i in range(columns_layout.count() - 1):  # -1 to exclude the Add Column button
+                row_item = columns_layout.itemAt(i)
+                if row_item and row_item.layout():
+                    for j in range(row_item.layout().count()):
+                        widget = row_item.layout().itemAt(j).widget()
+                        if isinstance(widget, QPushButton) and widget.text() == "Delete":
+                            old_index = widget.property("column_index")
+                            if old_index > index:
+                                widget.setProperty("column_index", old_index - 1)
+                                # Update the click handler
+                                widget.clicked.disconnect()
+                                widget.clicked.connect(lambda checked, idx=old_index-1: self.deleteColumnFromCustomizeDialog(idx, column_configs, column_widgets, columns_layout))
 
 
 class TaskDialog(QDialog):

@@ -907,7 +907,15 @@ class Database:
                     return None
                 
                 if 'program' in response and 'id' in response['program']:
-                    return response['program']['id']
+                    program_id = response['program']['id']
+                    # Set default kanban columns for the new program
+                    default_columns = [
+                        {"id": "todo", "title": "To Do"},
+                        {"id": "in_progress", "title": "In Progress"},
+                        {"id": "done", "title": "Done"}
+                    ]
+                    self.save_program_kanban_config(program_id, default_columns)
+                    return program_id
                 
                 print(f"Unexpected response from API: {response}")
                 return None
@@ -923,7 +931,17 @@ class Database:
                 (program.name, program.patient_id)
             )
             self.conn.commit()
-            return cursor.lastrowid
+            program_id = cursor.lastrowid
+            
+            # Set default kanban columns for the new program
+            default_columns = [
+                {"id": "todo", "title": "To Do"},
+                {"id": "in_progress", "title": "In Progress"},
+                {"id": "done", "title": "Done"}
+            ]
+            self.save_program_kanban_config(program_id, default_columns)
+            
+            return program_id
         except sqlite3.Error as e:
             print(f"Error adding program: {e}")
             return None
