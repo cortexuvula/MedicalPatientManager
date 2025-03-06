@@ -307,7 +307,8 @@ class KanbanColumn(QWidget):
         # "+" button with manual vertical alignment adjustment
         add_btn = QPushButton("+")
         add_btn.setFixedSize(28, 28)
-        add_btn.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        add_btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        add_btn.setContentsMargins(0, 0, 0, 0)
         
         # Force white text color with !important to override any default styling
         add_btn.setStyleSheet("""
@@ -316,7 +317,7 @@ class KanbanColumn(QWidget):
                 color: white !important;
                 border: none;
                 border-radius: 14px;
-                padding-bottom: 2px;
+                padding-bottom: 6px;
             }
             QPushButton:hover {
                 background-color: #2ecc71;
