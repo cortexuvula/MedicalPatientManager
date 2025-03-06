@@ -1,85 +1,160 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QScrollArea, QFrame, QInputDialog,
                              QTextEdit, QDialog, QLineEdit, QFormLayout, QMessageBox,
-                             QTabWidget, QApplication, QDialogButtonBox, QComboBox, QSpinBox)
-from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QTimer, QSettings
-from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor
+                             QTabWidget, QApplication, QDialogButtonBox, QComboBox, QSpinBox,
+                             QColorDialog, QSizePolicy, QToolButton)
+from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QTimer, QSettings, QSize
+from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor, QColor
 import copy
 
 from models import Task, Program
 
 
 class TaskWidget(QFrame):
-    """Widget representing a task in the Kanban board."""
+    """Widget representing a task in the kanban board."""
     
-    # Add signals for edit and delete
-    edit_clicked = pyqtSignal(object)  # Signal when edit button is clicked (with task object)
-    delete_clicked = pyqtSignal(object)  # Signal when delete button is clicked (with task object)
+    doubleClicked = pyqtSignal(object)  # Signal when the task is double-clicked
+    moveTask = pyqtSignal(int, str)  # Signal to move a task (task_id, new_status)
+    edit_clicked = pyqtSignal(object)  # Signal when edit button is clicked
+    delete_clicked = pyqtSignal(object)  # Signal when delete button is clicked
     
     def __init__(self, task, parent=None):
         super().__init__(parent)
         self.task = task
         self.task_version = task.version  # Store the current task version
-        self.initUI()
-    
-    def initUI(self):
+        
         self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Raised)
         self.setLineWidth(1)
-        self.setMinimumHeight(100)
-        self.setMaximumHeight(150)
+        
+        # Set cursor to indicate it's draggable
+        self.setCursor(Qt.PointingHandCursor)
+        
+        # Allow the task to be dragged
         self.setAcceptDrops(True)  # Enable drops for vertical reordering
         
+        # Set fixed height
+        self.setMinimumHeight(100)
+        self.setMaximumHeight(200)
+        self.setMinimumWidth(180)
+        
+        # Set style with task color and a priority border color
+        priority_colors = {
+            "High": "#e74c3c",   # Red for high priority
+            "Medium": "#f39c12", # Orange for medium priority
+            "Low": "#2ecc71"     # Green for low priority
+        }
+        
+        priority_color = priority_colors.get(task.priority, priority_colors["Medium"])
+        task_color = task.color if hasattr(task, 'color') and task.color else "#ffffff"
+        
+        self.setStyleSheet(f"""
+            TaskWidget {{
+                background-color: {task_color};
+                border: 1px solid #d0d0d0;
+                border-left: 6px solid {priority_color};
+                border-radius: 6px;
+                padding: 8px;
+                margin: 4px;
+            }}
+        """)
+        
+        # Create layout
         layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         self.setLayout(layout)
         
-        # Task title
-        self.title_label = QLabel(self.task.name)
-        self.title_label.setFont(QFont("Arial", 10, QFont.Bold))
-        self.title_label.setWordWrap(True)
-        layout.addWidget(self.title_label)
+        # Task name (first line, bold)
+        self.name_label = QLabel(task.name)
+        self.name_label.setWordWrap(True)
+        self.name_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.name_label.setStyleSheet("color: #2c3e50;")
+        layout.addWidget(self.name_label)
         
-        # Task description (if any)
-        if self.task.description:
-            self.desc_label = QLabel(self.task.description)
+        # Priority indicator - simplified approach with direct styling
+        priority_text = task.priority + " Priority"
+        priority_label = QLabel(priority_text)
+        priority_label.setFixedHeight(36)
+        priority_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        priority_label.setFont(QFont("Segoe UI", 10))
+        priority_label.setAlignment(Qt.AlignCenter)
+        priority_label.setStyleSheet(f"""
+            background-color: {priority_color};
+            color: white;
+            border-radius: 5px;
+            padding: 4px;
+            margin: 3px 0px;
+            font-weight: bold;
+        """)
+        layout.addWidget(priority_label)
+        
+        # Description (additional lines if available)
+        if task.description:
+            desc_text = task.description
+            if len(desc_text) > 100:
+                desc_text = desc_text[:97] + "..."
+                
+            self.desc_label = QLabel(desc_text)
             self.desc_label.setWordWrap(True)
+            self.desc_label.setFont(QFont("Segoe UI", 9))
+            self.desc_label.setStyleSheet("color: #34495e; margin-top: 4px;")
             layout.addWidget(self.desc_label)
+        
+        # Add spacing before buttons
+        layout.addSpacing(5)
         
         # Task actions
         action_layout = QHBoxLayout()
+        action_layout.setSpacing(8)
         
-        self.edit_btn = QPushButton("Edit")
-        self.edit_btn.setFixedWidth(60)
-        self.edit_btn.clicked.connect(self._on_edit_clicked)
+        # Edit button
+        edit_btn = QPushButton("Edit")
+        edit_btn.setFixedSize(60, 28)
+        edit_btn.setFont(QFont("Segoe UI", 8))
+        edit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #1c5b8c;
+            }
+        """)
+        edit_btn.clicked.connect(self._on_edit_clicked)
+        action_layout.addWidget(edit_btn)
         
-        self.delete_btn = QPushButton("Delete")
-        self.delete_btn.setFixedWidth(60)
-        self.delete_btn.clicked.connect(self._on_delete_clicked)
+        # Delete button
+        delete_btn = QPushButton("Delete")
+        delete_btn.setFixedSize(60, 28)
+        delete_btn.setFont(QFont("Segoe UI", 8))
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+            QPushButton:pressed {
+                background-color: #922b21;
+            }
+        """)
+        delete_btn.clicked.connect(self._on_delete_clicked)
+        action_layout.addWidget(delete_btn)
         
-        action_layout.addWidget(self.edit_btn)
-        action_layout.addWidget(self.delete_btn)
         action_layout.addStretch()
         
         layout.addLayout(action_layout)
-        
-        # Set style
-        self.setStyleSheet("""
-            TaskWidget {
-                background-color: white;
-                border-radius: 5px;
-                border: 1px solid #cccccc;
-            }
-            
-            QPushButton {
-                background-color: #f0f0f0;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 3px;
-            }
-            
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
     
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -88,24 +163,25 @@ class TaskWidget(QFrame):
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.LeftButton):
             return
-        
+            
         if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
             return
-        
+            
         drag = QDrag(self)
         mime_data = QMimeData()
         
-        # Include both task ID and type of drag (vertical or horizontal)
+        # Include both task ID and type of drag
         task_data = f"{self.task.id}:task"
         mime_data.setText(task_data)
         drag.setMimeData(mime_data)
         
-        # Create a pixmap representation of the widget for the drag
-        pixmap = self.grab()
+        # Create a pixmap of the task for drag visualization
+        pixmap = QPixmap(self.size())
+        self.render(pixmap)
         drag.setPixmap(pixmap)
         drag.setHotSpot(event.pos())
         
-        # Start drag operation
+        # Execute drag
         drag.exec_(Qt.MoveAction)
     
     def dragEnterEvent(self, event):
@@ -122,66 +198,34 @@ class TaskWidget(QFrame):
         mime_data = event.mimeData()
         if mime_data.hasText():
             text = mime_data.text()
-            if text.startswith("kanban_column:"):
-                # Extract dragged column ID
-                dragged_column_id = text.split(":", 1)[1]
-                # Let the parent handle column reordering
-                parent = self.parent()
-                if parent:
-                    # Find the index of this column
-                    for i, column in enumerate(parent.findChildren(KanbanColumn)):
-                        if column == self:
-                            # Emit signal to reorder columns
-                            self.columnMoved.emit(dragged_column_id, i)
-                            break
-            elif ":task" in text:
+            if ":task" in text:
                 # Extract task ID
                 task_id = int(text.split(":", 1)[0])
                 
-                # If dropped directly on the column (not on a task)
-                # Find the nearest task based on drop position
-                drop_position = event.pos().y()
-                insert_index = 0  # Default to top position
+                # Find the parent KanbanColumn
+                parent = self.parent()
+                while parent and not isinstance(parent, KanbanColumn):
+                    parent = parent.parent()
                 
-                # Find the index where the task should be inserted
-                for i in range(self.tasks_layout.count()):
-                    item = self.tasks_layout.itemAt(i)
-                    if item and item.widget() and isinstance(item.widget(), TaskWidget):
-                        widget = item.widget()
-                        widget_pos = widget.mapTo(self, QPoint(0, 0)).y()
-                        widget_height = widget.height()
-                        widget_center = widget_pos + widget_height / 2
-                        
-                        if drop_position < widget_center:
-                            # Found the position - drop before this widget
+                if parent and isinstance(parent, KanbanColumn):
+                    # Find the index where the task should be inserted
+                    this_idx = -1
+                    for i in range(parent.tasks_layout.count()):
+                        item = parent.tasks_layout.itemAt(i)
+                        if item and item.widget() == self:
+                            this_idx = i
                             break
-                        insert_index = i + 1
-                
-                # Handle the drop - either status change or reordering
-                source_task = None
-                for column in self.parent().findChildren(KanbanColumn):
-                    for i in range(column.tasks_layout.count()):
-                        item = column.tasks_layout.itemAt(i)
-                        if item and item.widget() and isinstance(item.widget(), TaskWidget):
-                            task_widget = item.widget()
-                            if task_widget.task.id == task_id:
-                                source_task = task_widget.task
-                                break
-                    if source_task:
-                        break
-                
-                if source_task and source_task.status != self.status:
-                    # Status change (moved to different column)
-                    self.taskDropped.emit(task_id, self.status)
-                else:
-                    # Reordering within the same column
-                    self.taskReordered.emit(task_id, insert_index)
-            else:
-                # Legacy support for old format (just task ID)
-                task_id = int(text)
-                self.taskDropped.emit(task_id, self.status)
-        
+                    
+                    if this_idx >= 0:
+                        # Signal to the column that a task has been dropped for reordering
+                        parent.taskReordered.emit(task_id, this_idx)
+                        
         event.acceptProposedAction()
+    
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click to open task editor."""
+        if event.button() == Qt.LeftButton:
+            self.doubleClicked.emit(self.task)
     
     def _on_edit_clicked(self):
         """Emit signal when edit button is clicked."""
@@ -200,10 +244,11 @@ class KanbanColumn(QWidget):
     taskDoubleClicked = pyqtSignal(object)  # Signals when a task is double-clicked (task_object)
     taskAdded = pyqtSignal(str)  # Signal to add a task to this status
     
-    def __init__(self, status, title, parent=None):
+    def __init__(self, status, title, color="#f0f0f0", parent=None):
         super().__init__(parent)
         self.title = title
         self.status = status  # The status this column represents (todo, in_progress, etc.)
+        self.color = color  # Background color for the column
         self.setAcceptDrops(True)
         
         # We'll implement our own drag functionality
@@ -211,79 +256,141 @@ class KanbanColumn(QWidget):
         self.initUI()
     
     def initUI(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+        self.setLayout(main_layout)
         
-        # Column header
-        header_layout = QHBoxLayout()
-        header_widget = QFrame()
-        header_widget.setObjectName("column_header")
-        header_widget.setLayout(header_layout)
-        header_widget.setCursor(Qt.OpenHandCursor)
-        header_widget.setStyleSheet("background-color: #e0e0e0; border-radius: 3px; padding: 5px;")
-        
-        # Column title
-        self.title_label = QLabel(self.title)
-        self.title_label.setFont(QFont("Arial", 12, QFont.Bold))
-        self.title_label.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(self.title_label)
-        
-        # Add the header to the main layout
-        layout.addWidget(header_widget)
-        
-        # Tasks container
-        self.tasks_container = QWidget()
-        self.tasks_layout = QVBoxLayout()
-        self.tasks_container.setLayout(self.tasks_layout)
-        
-        # Scroll area for tasks
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.tasks_container)
-        layout.addWidget(scroll)
-        
-        # Add task button
-        self.add_btn = QPushButton("+ Add Task")
-        self.add_btn.clicked.connect(self.addTask)
-        layout.addWidget(self.add_btn)
-        
-        # Set size policy to expand horizontally
+        # Set size policy to expand horizontally and vertically
         from PyQt5.QtWidgets import QSizePolicy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Set minimum width to ensure column is usable
-        self.setMinimumWidth(200)
+        # Set the column background color with a more professional appearance
+        self.setStyleSheet(f"""
+            QWidget {{ 
+                background-color: {self.color}; 
+                border-radius: 8px;
+                border: 1px solid #d0d0d0;
+            }}
+        """)
         
-        # Set style
-        self.setStyleSheet("""
-            KanbanColumn {
-                background-color: #f5f5f5;
-                border-radius: 5px;
-                border: 1px solid #dddddd;
+        # Create a header container with styling
+        header_container = QFrame()
+        header_container.setMinimumHeight(40)
+        header_container.setMaximumHeight(40)
+        header_container.setStyleSheet(f"""
+            QFrame {{
+                background-color: {self.darken_color(self.color, 0.05)};
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                border-bottom: 1px solid #d0d0d0;
+            }}
+        """)
+        
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(10, 0, 10, 0)
+        
+        # Title (click and drag to move)
+        self.title_label = QLabel(self.title)
+        self.title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.title_label.setStyleSheet("color: #2c3e50;")
+        
+        # Make title label draggable
+        self.title_label.setMouseTracking(True)
+        self.title_label.installEventFilter(self)
+        
+        header_layout.addWidget(self.title_label)
+        
+        # Add spacer to push the add button to the right
+        header_layout.addStretch(1)
+        
+        # "+" button with manual vertical alignment adjustment
+        add_btn = QPushButton("+")
+        add_btn.setFixedSize(28, 28)
+        add_btn.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        
+        # Force white text color with !important to override any default styling
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white !important;
+                border: none;
+                border-radius: 14px;
+                padding-bottom: 2px;
             }
-            
+            QPushButton:hover {
+                background-color: #2ecc71;
+                color: white !important;
+            }
+            QPushButton:pressed {
+                background-color: #219653;
+                color: white !important;
+            }
+        """)
+        add_btn.clicked.connect(self.addTask)
+        header_layout.addWidget(add_btn)
+        
+        main_layout.addWidget(header_container)
+        
+        # Scrollable area for tasks with improved styling
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)  # Remove border
+        scroll.setStyleSheet("""
             QScrollArea {
                 border: none;
+                background-color: transparent;
             }
-            
-            QPushButton {
-                background-color: #e0f0f0;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 5px;
+            QScrollBar:vertical {
+                border: none;
+                background: rgba(0, 0, 0, 0.05);
+                width: 8px;
+                border-radius: 4px;
+                margin: 0px;
             }
-            
-            QPushButton:hover {
-                background-color: #d0d0d0;
+            QScrollBar::handle:vertical {
+                background: rgba(0, 0, 0, 0.2);
+                border-radius: 4px;
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
         
-        # Install event filter for the header to handle mouse events for dragging
-        header_widget.installEventFilter(self)
+        # Container for task widgets
+        self.tasks_container = QWidget()
+        self.tasks_container.setStyleSheet(f"background-color: {self.color};")
+        self.tasks_layout = QVBoxLayout()
+        self.tasks_layout.setAlignment(Qt.AlignTop)
+        self.tasks_layout.setContentsMargins(5, 5, 5, 5)
+        self.tasks_layout.setSpacing(10)  # Increased space between tasks
+        self.tasks_container.setLayout(self.tasks_layout)
+        
+        scroll.setWidget(self.tasks_container)
+        main_layout.addWidget(scroll)
+    
+    def darken_color(self, hex_color, factor=0.1):
+        """Darken a hex color by a factor."""
+        # Remove # if present
+        hex_color = hex_color.lstrip('#')
+        
+        # Convert to RGB
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        
+        # Darken
+        r = max(0, int(r * (1 - factor)))
+        g = max(0, int(g * (1 - factor)))
+        b = max(0, int(b * (1 - factor)))
+        
+        # Convert back to hex
+        return f"#{r:02x}{g:02x}{b:02x}"
     
     def eventFilter(self, obj, event):
         """Handle mouse events for the column header."""
-        if obj.objectName() == "column_header":
+        if obj == self.title_label:
             if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_start_position = event.pos()
                 return True
@@ -327,7 +434,11 @@ class KanbanColumn(QWidget):
             print("Error: Could not find KanbanBoard parent")
     
     def addTaskWidget(self, task_widget):
+        """Add a task widget to this column."""
         self.tasks_layout.addWidget(task_widget)
+        
+        # Connect to the task widget's signals
+        task_widget.doubleClicked.connect(self.onTaskDoubleClicked)
     
     def dragEnterEvent(self, event):
         mime_data = event.mimeData()
@@ -411,7 +522,14 @@ class KanbanColumn(QWidget):
                 self.taskDropped.emit(task_id, self.status)
         
         event.acceptProposedAction()
-
+        
+        # No need to update task counts anymore since we removed the counter
+        # Update task counts for all columns after drop
+        # if self.parent():
+        #     for column in self.parent().findChildren(KanbanColumn):
+        #         if hasattr(column, 'updateTaskCount'):
+        #             column.updateTaskCount()
+                
     def onTaskDoubleClicked(self, item):
         """Handle double-click on a task item."""
         # Get the task data stored in the item
@@ -425,11 +543,12 @@ class KanbanBoard(QWidget):
     
     refreshRequired = pyqtSignal()  # Signal to indicate a refresh is needed
     
-    def __init__(self, db, program_id, parent=None):
+    def __init__(self, db, program_id, patient_id=None, parent=None):
         """Initialize KanbanBoard with the database and program ID."""
         super().__init__(parent)
         self.db = db
         self.program_id = program_id
+        self.patient_id = patient_id
         self.config = QSettings("MedicalPatientManager", "KanbanBoard")
         
         # Get conflict resolution mode from user settings or use default
@@ -463,28 +582,117 @@ class KanbanBoard(QWidget):
     
     def initUI(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
         self.setLayout(layout)
         
-        # Header
-        header_layout = QHBoxLayout()
-        title = QLabel(f"{self.db.get_program_by_id(self.program_id).name}")
-        title.setFont(QFont("Arial", 14, QFont.Bold))
+        # Apply a clean background style to the board
+        self.setStyleSheet("""
+            QWidget#kanbanBoard {
+                background-color: #f5f7fa;
+                border-radius: 8px;
+            }
+        """)
+        self.setObjectName("kanbanBoard")
+        
+        # Header with improved styling
+        header_container = QFrame()
+        header_container.setMaximumHeight(60)
+        header_container.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fb;
+                border-radius: 8px;
+                border: 1px solid #e0e4e8;
+            }
+        """)
+        
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(15, 0, 15, 0)
+        
+        # Program title with better typography
+        program_name = self.db.get_program_by_id(self.program_id).name
+        title = QLabel(program_name)
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setStyleSheet("color: #2c3e50;")
         header_layout.addWidget(title)
         
-        # Buttons for program management
+        # Patient name (if available)
+        if self.patient_id:
+            try:
+                patient = self.db.get_patient_by_id(self.patient_id)
+                if patient:
+                    patient_label = QLabel(f"Patient: {patient.first_name} {patient.last_name}")
+                    patient_label.setFont(QFont("Segoe UI", 12))
+                    patient_label.setStyleSheet("color: #34495e; margin-left: 15px;")
+                    header_layout.addWidget(patient_label)
+            except Exception as e:
+                print(f"Error retrieving patient details: {e}")
+        
+        header_layout.addStretch()
+        
+        # Button container for better alignment
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setSpacing(10)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Redesigned buttons for program management
         self.edit_program_btn = QPushButton("Edit Program")
+        self.edit_program_btn.setFont(QFont("Segoe UI", 10))
+        self.edit_program_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_program_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #1c5b8c;
+            }
+        """)
         self.edit_program_btn.clicked.connect(self.editProgram)
-        header_layout.addWidget(self.edit_program_btn)
+        button_layout.addWidget(self.edit_program_btn)
         
-        # Button for customizing column titles
+        # Button for customizing column titles with matching style
         self.customize_columns_btn = QPushButton("Customize Columns")
+        self.customize_columns_btn.setFont(QFont("Segoe UI", 10))
+        self.customize_columns_btn.setCursor(Qt.PointingHandCursor)
+        self.customize_columns_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2ecc71;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+            QPushButton:pressed {
+                background-color: #1e8449;
+            }
+        """)
         self.customize_columns_btn.clicked.connect(self.customizeColumns)
-        header_layout.addWidget(self.customize_columns_btn)
+        button_layout.addWidget(self.customize_columns_btn)
         
-        layout.addLayout(header_layout)
+        header_layout.addWidget(button_container)
+        layout.addWidget(header_container)
         
-        # Kanban columns - use a widget container to better control the layout
+        # Kanban columns container with enhanced styling
         columns_container = QWidget()
+        columns_container.setStyleSheet("""
+            QWidget {
+                background-color: #f0f2f5;
+                border-radius: 8px;
+            }
+        """)
         self.columns_layout = QHBoxLayout(columns_container)
         self.columns_layout.setContentsMargins(0, 0, 0, 0)
         self.columns_layout.setSpacing(10)  # Add some space between columns
@@ -498,7 +706,6 @@ class KanbanBoard(QWidget):
     
     def createColumns(self):
         """Create columns for the kanban board based on configuration."""
-        print("Creating kanban columns...")
         try:
             # First, remove the existing columns
             for i in reversed(range(self.columns_layout.count())):
@@ -513,49 +720,76 @@ class KanbanBoard(QWidget):
             
             # Get column configuration based on current program
             column_configs = self.db.get_program_kanban_config(self.program_id)
-            print(f"Retrieved program kanban config: {column_configs}")
             
             # If no program-specific config exists, use global config
             if column_configs is None:
-                print("No program-specific config, using global config")
                 # Get column configuration from general settings
                 kanban_config = self.config.value("kanban_columns", [])
                 
                 # Handle old configuration format (dictionary with key-value pairs)
                 if isinstance(kanban_config, dict):
-                    print("Converting old dictionary config format to list")
                     # Convert old format to new format
                     column_configs = [{"id": column_id, "title": kanban_config[column_id]} for column_id in kanban_config]
                 # Handle new configuration format (list of objects)
                 elif isinstance(kanban_config, list):
-                    print("Using list config format")
                     column_configs = kanban_config
             
             # If no valid configuration (empty list or none), use defaults
             if not column_configs:
-                print("No valid config found, using default columns")
                 column_configs = [
-                    {"id": "todo", "title": "To Do"},
-                    {"id": "in_progress", "title": "In Progress"},
-                    {"id": "done", "title": "Done"}
+                    {"id": "todo", "title": "To Do", "color": "#f0f7ff"},         # Light blue for To Do
+                    {"id": "in_progress", "title": "In Progress", "color": "#fff7e6"}, # Light orange for In Progress
+                    {"id": "done", "title": "Done", "color": "#f0fff5"}           # Light green for Done
                 ]
             
-            # Now create the columns
+            # Define default colors for common column types if not specified in config
+            default_colors = {
+                "todo": "#f0f7ff",       # Light blue for To Do
+                "backlog": "#f5f5f5",    # Light grey for Backlog
+                "in_progress": "#fff7e6", # Light orange for In Progress
+                "review": "#f5f0ff",     # Light purple for Review
+                "testing": "#fff0f7",    # Light pink for Testing
+                "done": "#f0fff5"        # Light green for Done
+            }
+            
+            # Now create the columns with professional styling
             for config in column_configs:
-                print(f"Creating column: {config}")
-                column = KanbanColumn(title=config["title"], status=config["id"])
+                # Use default color based on column ID if no color specified
+                column_id = config["id"].lower()
+                color = config.get("color", default_colors.get(column_id, "#f5f7fa"))
+                
+                column = KanbanColumn(
+                    title=config["title"], 
+                    status=config["id"], 
+                    color=color
+                )
+                
+                # Connect signals
                 column.taskDropped.connect(self.onTaskDropped)
                 column.taskReordered.connect(self.onTaskReordered)
-                column.taskDoubleClicked.connect(self.editTask)  # Connect to taskDoubleClicked signal
-                column.taskAdded.connect(self.addTask)  # Connect to taskAdded signal
+                column.taskDoubleClicked.connect(self.editTask)
+                column.taskAdded.connect(self.addTask)
                 column.columnMoved.connect(self.onColumnMoved)
-                self.columns_layout.addWidget(column, 1)  # Add stretch factor of 1 to distribute space evenly
+                
+                # Set a fixed minimum width for more consistent layout
+                column.setMinimumWidth(250)
+                
+                # Add to layout with stretch factor
+                self.columns_layout.addWidget(column, 1)
                 self.columns[config["id"]] = column
                 
-            print(f"Created {len(self.columns)} columns")
+            # Add stretch at the end to prevent columns from expanding too wide
+            self.columns_layout.addStretch(0)
+                
             # Load tasks after creating columns
             if hasattr(self, 'tasks'):
                 self.loadTasks()
+                
+            # Update task counts for all columns
+            for column in self.columns.values():
+                if hasattr(column, 'updateTaskCount'):
+                    column.updateTaskCount()
+                    
         except Exception as e:
             import traceback
             print(f"Error creating columns: {e}")
@@ -593,6 +827,7 @@ class KanbanBoard(QWidget):
                     # Connect the edit and delete signals
                     task_widget.edit_clicked.connect(self.editTask)
                     task_widget.delete_clicked.connect(self.deleteTask)
+                    task_widget.doubleClicked.connect(self.editTask)
                     column.tasks_layout.addWidget(task_widget)
                     
         # Add spacer at the end of each column for proper spacing
@@ -651,7 +886,10 @@ class KanbanBoard(QWidget):
                 name=task_data["name"],
                 description=task_data["description"],
                 status=status,
-                program_id=self.program_id
+                program_id=self.program_id,
+                patient_id=self.patient_id if hasattr(self, 'patient_id') else None,
+                priority=task_data["priority"],
+                color=task_data["color"]
             )
             self.db.add_task(task)
             self.loadTasks()
@@ -710,6 +948,8 @@ class KanbanBoard(QWidget):
             task_data = dialog.getTaskData()
             task.name = task_data["name"]
             task.description = task_data["description"]
+            task.priority = task_data["priority"]
+            task.color = task_data["color"]
             
             # Update with version checking
             result = self.db.update_task(task, expected_version=task.version)
@@ -754,62 +994,60 @@ class KanbanBoard(QWidget):
                 self.loadTasks()
     
     def onTaskDropped(self, task_id, new_status):
-        """Update task status when dropped into a new column with concurrency control."""
+        """Handle a task being dropped in a new column (status change).
+        
+        Args:
+            task_id: ID of the task being moved
+            new_status: New status (column) for the task
+        """
+        # Get the task object
+        task = self.db.get_task_by_id(task_id)
+        if not task:
+            print(f"Error: Task with ID {task_id} not found")
+            return
+            
+        old_status = task.status
+        if old_status == new_status:
+            # No change in status
+            return
+            
+        # Update the task status with version checking
+        result = self.db.update_task_status(task_id, new_status, expected_version=task.version)
+        success, conflict_data = result
+        
+        if not success:
+            # Handle conflict based on conflict resolution mode
+            if self.conflict_resolution_mode == "manual":
+                self._showConflictDialog("The task has been modified by another user.", 
+                                         "Would you like to override their changes?")
+            # In "last_writer_wins" mode, we'll refresh the board which will show the latest state
+        
+        # Reload the tasks to reflect any changes
+        self.loadTasks()
+    
+    def onTaskReordered(self, task_id, new_position):
+        """Update task order when reordered within a column with concurrency control."""
         # Get current task version
         task = self.db.get_task_by_id(task_id)
         if not task:
             QMessageBox.warning(self, "Task Not Found", 
-                               "The task no longer exists and may have been deleted by another user.")
+                              "The task no longer exists and may have been deleted by another user.")
             self.loadTasks()
             return
             
-        current_version = task.version
-        expected_version = self.task_versions.get(task_id, current_version)
-        
         # Update with version checking
-        result = self.db.update_task_status(task_id, new_status, expected_version=expected_version)
+        result = self.db.reorder_tasks(task_id, new_position, expected_version=task.version)
+        success, conflict_data = result
         
-        if isinstance(result, dict) and result.get('conflict', False):
-            QMessageBox.warning(self, "Update Conflict", 
-                               "The task was modified by another user. The board will refresh with the latest changes.")
-            self.loadTasks()
-        elif result:
-            # Update local version if successful
-            if isinstance(result, dict) and 'new_version' in result:
-                self.task_versions[task_id] = result['new_version']
-            self.loadTasks()
-    
-    def onTaskReordered(self, task_id, new_position):
-        """Update task order when reordered within a column with concurrency control."""
-        # Find the task to get its status and program_id
-        task = None
-        for column in self.columns.values():
-            for i in range(column.tasks_layout.count()):
-                item = column.tasks_layout.itemAt(i)
-                if item and item.widget() and isinstance(item.widget(), TaskWidget):
-                    task_widget = item.widget()
-                    if task_widget.task.id == task_id:
-                        task = task_widget.task
-                        break
-            if task:
-                break
+        if not success:
+            # Handle conflict based on conflict resolution mode
+            if self.conflict_resolution_mode == "manual":
+                QMessageBox.warning(self, "Update Conflict", 
+                                   "The task was modified by another user. The board will refresh with the latest changes.")
+            # In "last_writer_wins" mode, we'll refresh the board which will show the latest state
         
-        if task:
-            # Get expected version
-            expected_version = self.task_versions.get(task_id, task.version)
-            
-            # Update the task order in the database with concurrency control
-            result = self.db.reorder_tasks(self.program_id, task.status, task_id, new_position, expected_version=expected_version)
-            
-            if isinstance(result, dict) and result.get('conflict', False):
-                QMessageBox.warning(self, "Reorder Conflict", 
-                                   "The task order was modified by another user. The board will refresh with the latest changes.")
-                self.loadTasks()
-            elif result:
-                # Update local version if successful
-                if isinstance(result, dict) and 'new_version' in result:
-                    self.task_versions[task_id] = result['new_version']
-                self.loadTasks()
+        # Reload the tasks to reflect any changes
+        self.loadTasks()
     
     def onColumnMoved(self, column_id, new_position):
         """Update column order when a column is moved."""
@@ -818,7 +1056,7 @@ class KanbanBoard(QWidget):
         
         # If no program-specific config exists, get from global config
         if column_configs is None:
-            # Get column configuration from global config
+            # Get column configuration from general settings
             kanban_config = self.config.value("kanban_columns", [])
             
             # Handle old configuration format (dictionary with key-value pairs)
@@ -879,44 +1117,72 @@ class KanbanBoard(QWidget):
         """Open a dialog to customize kanban board columns."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Customize Kanban Board")
-        dialog.setMinimumWidth(600)
-        dialog.setMinimumHeight(400)
+        dialog.setMinimumWidth(500)
         
-        # Create tab widget for different customization options
-        tabs = QTabWidget()
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        
+        # Get current column configs
+        column_configs = self.db.get_program_kanban_config(self.program_id)
+        column_configs_copy = copy.deepcopy(column_configs)  # Make a copy to work with
+        
+        # Create a scroll area for columns
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        columns_layout = QVBoxLayout()
+        container.setLayout(columns_layout)
+        scroll.setWidget(container)
+        
+        # Tab widget for different settings
+        tab_widget = QTabWidget()
+        layout.addWidget(tab_widget)
         
         # Columns tab
         columns_tab = QWidget()
-        columns_layout = QVBoxLayout()
-        columns_tab.setLayout(columns_layout)
+        columns_tab_layout = QVBoxLayout()
+        columns_tab.setLayout(columns_tab_layout)
         
-        # Get current column configurations
-        column_configs = self.db.get_program_kanban_config(self.program_id)
+        # Add the scroll area to the columns tab
+        columns_tab_layout.addWidget(scroll)
         
-        # Create a copy of the column configurations to work with
-        column_configs_copy = copy.deepcopy(column_configs)
-        
-        # List to keep track of column widgets
+        # Store column widgets for later reference
         column_widgets = []
         
-        # Create input fields for each column
+        # Add existing columns to the dialog
         for i, config in enumerate(column_configs_copy):
             row_layout = QHBoxLayout()
             
-            # Column ID (read-only)
+            # Column ID (hidden from user but used for tracking)
             id_label = QLabel(f"ID: {config['id']}")
+            id_label.setVisible(False)  # Hide the ID
             row_layout.addWidget(id_label)
             
-            # Column Title (editable)
+            # Column title
             title_label = QLabel("Title:")
             row_layout.addWidget(title_label)
             
             title_edit = QLineEdit(config["title"])
             row_layout.addWidget(title_edit)
             
-            # Delete button
+            # Column color picker
+            color_label = QLabel("Color:")
+            row_layout.addWidget(color_label)
+            
+            column_color = config.get("color", "#f0f0f0")
+            color_button = QPushButton()
+            color_button.setFixedSize(24, 24)
+            color_button.setStyleSheet(f"""
+                background-color: {column_color};
+                border: 1px solid #cccccc;
+            """)
+            color_button.clicked.connect(lambda checked, btn=color_button, widget_idx=len(column_widgets): 
+                                         self.selectColumnColor(btn, widget_idx, column_widgets))
+            row_layout.addWidget(color_button)
+            
+            # Delete button (only if we have more than the minimum required columns)
             delete_btn = QPushButton("Delete")
-            delete_btn.setProperty("column_index", i)
+            delete_btn.setEnabled(len(column_configs_copy) > 3)  # Ensure minimum of 3 columns
             delete_btn.clicked.connect(lambda checked, idx=i: self.deleteColumnFromCustomizeDialog(idx, column_configs_copy, column_widgets, columns_layout))
             row_layout.addWidget(delete_btn)
             
@@ -924,7 +1190,8 @@ class KanbanBoard(QWidget):
             
             column_widgets.append({
                 "id": config["id"],
-                "title_edit": title_edit
+                "title_edit": title_edit,
+                "color_button": color_button
             })
         
         # Add "Add Column" button
@@ -932,10 +1199,10 @@ class KanbanBoard(QWidget):
         add_column_btn = QPushButton("Add Column")
         add_column_btn.clicked.connect(lambda: self.addColumnFromCustomizeDialog(column_configs_copy, column_widgets, columns_layout))
         add_column_layout.addWidget(add_column_btn)
-        columns_layout.addLayout(add_column_layout)
+        columns_tab_layout.addLayout(add_column_layout)
         
         # Add tab to tab widget
-        tabs.addTab(columns_tab, "Columns")
+        tab_widget.addTab(columns_tab, "Columns")
         
         # Concurrency Settings Tab
         concurrency_tab = QWidget()
@@ -985,11 +1252,11 @@ class KanbanBoard(QWidget):
         concurrency_layout.addLayout(refresh_layout)
         
         # Add concurrency tab
-        tabs.addTab(concurrency_tab, "Concurrency Settings")
+        tab_widget.addTab(concurrency_tab, "Concurrency Settings")
         
         # Main dialog layout
         dialog_layout = QVBoxLayout()
-        dialog_layout.addWidget(tabs)
+        dialog_layout.addWidget(tab_widget)
         
         # Add OK and Cancel buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -999,6 +1266,15 @@ class KanbanBoard(QWidget):
         
         dialog.setLayout(dialog_layout)
         dialog.exec_()
+    
+    def selectColumnColor(self, color_button, widget_idx, column_widgets):
+        """Select a color for the column."""
+        color = QColorDialog.getColor()
+        if color.isValid():
+            column_widgets[widget_idx]["color_button"].setStyleSheet(f"""
+                background-color: {color.name()};
+                border: 1px solid #cccccc;
+            """)
     
     def saveColumnCustomizations(self, dialog, column_configs, column_widgets, conflict_mode_combo=None, refresh_interval_spinner=None):
         """Save column customizations from the dialog.
@@ -1014,6 +1290,7 @@ class KanbanBoard(QWidget):
         for i, config in enumerate(column_configs):
             if i < len(column_widgets):
                 config["title"] = column_widgets[i]["title_edit"].text()
+                config["color"] = column_widgets[i]["color_button"].styleSheet().split(":")[1].strip()
         
         # Save the updated configuration to the database
         self.db.save_program_kanban_config(self.program_id, column_configs)
@@ -1052,18 +1329,6 @@ class KanbanBoard(QWidget):
         # Close the dialog
         dialog.accept()
         
-    def editProgram(self):
-        """Edit the program name."""
-        name, ok = QInputDialog.getText(self, "Edit Program", 
-                                     "Program Name:", text=self.db.get_program_by_id(self.program_id).name)
-        if ok and name:
-            self.db.update_program(Program(name=name, id=self.program_id))
-            # Update the tab text
-            parent = self.parent()
-            if isinstance(parent, QTabWidget):
-                index = parent.indexOf(self)
-                parent.setTabText(index, name)
-                
     def addColumnFromCustomizeDialog(self, column_configs, column_widgets, columns_layout):
         """Add a new column from the column customization dialog."""
         # Create a new column configuration
@@ -1076,32 +1341,41 @@ class KanbanBoard(QWidget):
         # Create a new row for the column configuration
         row_layout = QHBoxLayout()
         
-        # Column ID (read-only)
+        # Column ID (hidden from user but used for tracking)
         id_label = QLabel(f"ID: {new_column_id}")
+        id_label.setVisible(False)  # Hide the ID
         row_layout.addWidget(id_label)
         
-        # Column Title (editable)
+        # Column title
         title_label = QLabel("Title:")
         row_layout.addWidget(title_label)
         
         title_edit = QLineEdit(new_column_title)
         row_layout.addWidget(title_edit)
         
+        # Column color picker
+        color_label = QLabel("Color:")
+        row_layout.addWidget(color_label)
+        
+        color_button = QPushButton()
+        color_button.setFixedSize(24, 24)
+        color_button.setStyleSheet("background-color: #f0f0f0; border: 1px solid #cccccc;")
+        color_button.clicked.connect(lambda checked, btn=color_button, widget_idx=len(column_widgets): 
+                                     self.selectColumnColor(btn, widget_idx, column_widgets))
+        row_layout.addWidget(color_button)
+        
         # Delete button
         delete_btn = QPushButton("Delete")
-        delete_btn.setProperty("column_index", len(column_configs) - 1)
         delete_btn.clicked.connect(lambda checked, idx=len(column_configs) - 1: self.deleteColumnFromCustomizeDialog(idx, column_configs, column_widgets, columns_layout))
         row_layout.addWidget(delete_btn)
         
-        column_widgets.append({"id": new_column_id, "title_edit": title_edit})
+        columns_layout.addLayout(row_layout)
         
-        # Insert the new row before the add button
-        # Remove the Add Column button and its layout which should be the last item
-        last_item_idx = columns_layout.count() - 1
-        last_item = columns_layout.itemAt(last_item_idx)
-        
-        # Add the new row before the add button
-        columns_layout.insertLayout(last_item_idx, row_layout)
+        column_widgets.append({
+            "id": new_column_id,
+            "title_edit": title_edit,
+            "color_button": color_button
+        })
     
     def deleteColumnFromCustomizeDialog(self, index, column_configs, column_widgets, columns_layout):
         """Delete a column from the kanban board.
@@ -1163,6 +1437,35 @@ class KanbanBoard(QWidget):
                                 widget.clicked.disconnect()
                                 widget.clicked.connect(lambda checked, idx=old_index-1: self.deleteColumnFromCustomizeDialog(idx, column_configs, column_widgets, columns_layout))
 
+    def editProgram(self):
+        """Edit the current program name."""
+        program = self.db.get_program_by_id(self.program_id)
+        if not program:
+            QMessageBox.warning(self, "Error", "Program not found")
+            return
+            
+        new_name, ok = QInputDialog.getText(
+            self, "Edit Program", "Program name:", 
+            QLineEdit.Normal, program.name
+        )
+        
+        if ok and new_name:
+            program.name = new_name
+            success = self.db.update_program(program)
+            
+            if success:
+                # Update the tab title if this is within a tab widget
+                parent = self.parent()
+                if isinstance(parent, QTabWidget):
+                    index = parent.indexOf(self)
+                    if index != -1:
+                        parent.setTabText(index, new_name)
+                        
+                # Update the header title
+                self.findChild(QLabel).setText(new_name)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to update program name")
+
 
 class TaskDialog(QDialog):
     """Dialog for adding or editing a task."""
@@ -1170,43 +1473,258 @@ class TaskDialog(QDialog):
     def __init__(self, task=None, parent=None):
         super().__init__(parent)
         self.task = task
+        self.task_color = task.color if task and hasattr(task, 'color') and task.color else "#ffffff"
         self.initUI()
     
     def initUI(self):
         self.setWindowTitle("Add Task" if not self.task else "Edit Task")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f8f9fb;
+                border-radius: 8px;
+            }
+            QLabel {
+                font-family: 'Segoe UI';
+                font-size: 11pt;
+                color: #2c3e50;
+            }
+            QLineEdit, QTextEdit, QComboBox {
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+                padding: 8px;
+                background-color: white;
+                font-family: 'Segoe UI';
+                font-size: 10pt;
+                color: #2c3e50;
+                selection-background-color: #3498db;
+            }
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+                border-color: #3498db;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left-width: 0px;
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+            }
+        """)
         
-        layout = QFormLayout()
-        self.setLayout(layout)
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setSpacing(15)
+        self.setLayout(main_layout)
+        
+        # Header with title
+        header_label = QLabel("Add Task" if not self.task else "Edit Task")
+        header_label.setStyleSheet("""
+            font-size: 16pt;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        """)
+        main_layout.addWidget(header_label)
+        
+        # Form layout for task fields
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 10, 0, 10)
+        form_layout.setSpacing(15)
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setVerticalSpacing(12)
         
         # Task name
+        name_label = QLabel("Task Name:")
         self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Enter task name...")
         if self.task:
             self.name_input.setText(self.task.name)
-        layout.addRow("Task Name:", self.name_input)
+        form_layout.addRow(name_label, self.name_input)
         
         # Task description
+        desc_label = QLabel("Description:")
         self.desc_input = QTextEdit()
+        self.desc_input.setPlaceholderText("Enter task description...")
         if self.task and self.task.description:
             self.desc_input.setText(self.task.description)
-        self.desc_input.setMaximumHeight(100)
-        layout.addRow("Description:", self.desc_input)
+        self.desc_input.setMinimumHeight(100)
+        form_layout.addRow(desc_label, self.desc_input)
+        
+        # Priority selection with styled combobox
+        priority_label = QLabel("Priority:")
+        self.priority_combo = QComboBox()
+        self.priority_combo.addItems(["High", "Medium", "Low"])
+        self.priority_combo.setItemData(0, "#e74c3c", Qt.UserRole + 1)  # Red for High
+        self.priority_combo.setItemData(1, "#f39c12", Qt.UserRole + 1)  # Orange for Medium
+        self.priority_combo.setItemData(2, "#2ecc71", Qt.UserRole + 1)  # Green for Low
+        
+        # Update the style based on the selected priority
+        self.priority_combo.setStyleSheet("""
+            QComboBox {
+                padding-left: 10px;
+                height: 30px;
+            }
+        """)
+        
+        # Set current priority
+        if self.task:
+            self.priority_combo.setCurrentText(self.task.priority)
+        else:
+            self.priority_combo.setCurrentText("Medium")
+            
+        # Update combobox style when selection changes
+        self.priority_combo.currentIndexChanged.connect(self.updatePriorityStyle)
+        self.updatePriorityStyle(self.priority_combo.currentIndex())
+        
+        form_layout.addRow(priority_label, self.priority_combo)
+        
+        # Color selection with preview
+        color_label = QLabel("Background Color:")
+        color_layout = QHBoxLayout()
+        
+        self.color_preview = QPushButton()
+        self.color_preview.setFixedSize(30, 30)
+        self.color_preview.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.task_color};
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                border: 1px solid #3498db;
+            }}
+        """)
+        self.color_preview.clicked.connect(self.selectColor)
+        
+        self.color_button = QPushButton("Choose Color")
+        self.color_button.setCursor(Qt.PointingHandCursor)
+        self.color_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                font-family: 'Segoe UI';
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        self.color_button.clicked.connect(self.selectColor)
+        
+        color_layout.addWidget(self.color_preview)
+        color_layout.addWidget(self.color_button)
+        color_layout.addStretch()
+        
+        form_layout.addRow(color_label, color_layout)
+        main_layout.addLayout(form_layout)
+        
+        main_layout.addStretch()
         
         # Buttons
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 15, 0, 0)
+        button_layout.setSpacing(15)
+        
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ecf0f1;
+                color: #2c3e50;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                font-family: 'Segoe UI';
+                font-weight: bold;
+                min-width: 100px;
+            }
+            QPushButton:hover {
+                background-color: #d6dbdf;
+            }
+        """)
         self.cancel_btn.clicked.connect(self.reject)
         
         self.save_btn = QPushButton("Save")
+        self.save_btn.setCursor(Qt.PointingHandCursor)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2ecc71;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                font-family: 'Segoe UI';
+                font-weight: bold;
+                min-width: 100px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+        """)
         self.save_btn.clicked.connect(self.accept)
         
+        button_layout.addStretch()
         button_layout.addWidget(self.cancel_btn)
         button_layout.addWidget(self.save_btn)
-        layout.addRow("", button_layout)
+        
+        main_layout.addLayout(button_layout)
+    
+    def updatePriorityStyle(self, index):
+        """Update the combobox style based on the selected priority."""
+        color = self.priority_combo.itemData(index, Qt.UserRole + 1)
+        self.priority_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding-left: 10px;
+                height: 30px;
+                border-left: 6px solid {color};
+            }}
+        """)
+    
+    def selectColor(self):
+        """Open a color dialog to select a task color."""
+        color = QColorDialog.getColor(initial=QColor(self.task_color))
+        if color.isValid():
+            self.task_color = color.name()
+            self.color_preview.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.task_color};
+                    border: 1px solid #dcdfe6;
+                    border-radius: 4px;
+                }}
+                QPushButton:hover {{
+                    border: 1px solid #3498db;
+                }}
+            """)
     
     def getTaskData(self):
         """Get the task data from the dialog."""
         return {
             "name": self.name_input.text(),
-            "description": self.desc_input.toPlainText()
+            "description": self.desc_input.toPlainText(),
+            "priority": self.priority_combo.currentText(),
+            "color": self.task_color
         }
+
+
+class Task:
+    """Represents a task in the kanban board."""
+    
+    def __init__(self, id=None, name="", description="", status="todo", patient_id=None, 
+                 program_id=None, order_index=0, color="#ffffff", priority="Medium",
+                 version=1, modified_at=None):
+        self.id = id
+        self.name = name
+        self.description = description
+        self.status = status
+        self.patient_id = patient_id
+        self.program_id = program_id
+        self.order_index = order_index
+        self.color = color  # Background color for the task
+        self.priority = priority  # Priority level: "High", "Medium", "Low"
+        self.version = version  # For concurrent edit handling
+        self.modified_at = modified_at  # Last modification timestamp

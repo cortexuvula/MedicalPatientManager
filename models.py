@@ -30,17 +30,20 @@ class Program:
 class Task:
     """Model class for tasks within a program."""
     
-    def __init__(self, name="", description="", status="To Do", program_id=None, id=None, order_index=0, 
-                 created_at=None, modified_at=None, version=1):
+    def __init__(self, name="", description="", status="To Do", program_id=None, patient_id=None, id=None, order_index=0, 
+                 created_at=None, modified_at=None, version=1, color="#ffffff", priority="Medium"):
         self.id = id
         self.name = name
         self.description = description
         self.status = status
         self.program_id = program_id
+        self.patient_id = patient_id
         self.order_index = order_index
         self.created_at = created_at
         self.modified_at = modified_at
         self.version = version
+        self.color = color
+        self.priority = priority
     
     def __str__(self):
         return self.name

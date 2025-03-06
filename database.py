@@ -128,8 +128,11 @@ class Database:
                 name TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL,
+                patient_id INTEGER,
                 program_id INTEGER NOT NULL,
                 order_index INTEGER DEFAULT 0,
+                color TEXT DEFAULT "#ffffff",
+                priority TEXT DEFAULT "Medium",
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 modified_at TIMESTAMP,
                 version INTEGER DEFAULT 1,
@@ -145,6 +148,15 @@ class Database:
             
             # Check if version column exists in tasks table and add it if not
             self._ensure_column_exists('tasks', 'version', 'INTEGER DEFAULT 1')
+            
+            # Check if color column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'color', 'TEXT DEFAULT "#ffffff"')
+            
+            # Check if priority column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'priority', 'TEXT DEFAULT "Medium"')
+            
+            # Check if patient_id column exists in tasks table and add it if not
+            self._ensure_column_exists('tasks', 'patient_id', 'INTEGER')
             
             # Create audit_log table
             cursor.execute('''
@@ -333,7 +345,6 @@ class Database:
         """Get a user by ID."""
         if self.mode == "remote":
             try:
-                # Use the API client to get the user
                 response = self.api_client.get_user(user_id)
                 
                 if 'error' in response:
@@ -1121,69 +1132,33 @@ class Database:
     
     # Task operations
     def add_task(self, task):
-        """Add a new task to the database."""
-        if self.mode == "remote":
-            try:
-                task_data = {
-                    'name': task.name,
-                    'description': task.description,
-                    'status': task.status,
-                    'program_id': task.program_id
-                }
-                response = self.api_client.add_task(task_data)
-                if 'error' in response:
-                    print(f"Error adding task through API: {response['error']}")
-                    return None
-                
-                if 'task' in response and 'id' in response['task']:
-                    return response['task']['id']
-                
-                print(f"Unexpected response from API: {response}")
-                return None
-                
-            except Exception as e:
-                print(f"Error in remote add_task: {e}")
-                return None
+        """Add a task to the database and return it with the assigned ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
         
-        try:
-            # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return None
-            
-            # Calculate next order_index for this status in this program
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order
-                FROM tasks 
-                WHERE program_id = ? AND status = ?
-            """, (task.program_id, task.status))
-            next_order = cursor.fetchone()['next_order']
-            
-            cursor.execute('''
-                INSERT INTO tasks (name, description, status, program_id, order_index, modified_at, version)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
-            ''', (task.name, task.description, task.status, task.program_id, next_order))
-            
-            task_id = cursor.lastrowid
-            self.conn.commit()
-            
-            # Set the task ID
-            task.id = task_id
-            
-            # Create an audit log entry
-            if hasattr(self, 'user') and self.user:
-                self.log_action(
-                    "CREATE", 
-                    "task", 
-                    task_id, 
-                    f"Task '{task.name}' created in program {task.program_id}"
-                )
-            
-            return task_id
-        except sqlite3.Error as e:
-            print(f"Error adding task: {e}")
-            return None
+        # Get highest order index for the status
+        cursor.execute("""
+            SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order
+            FROM tasks 
+            WHERE program_id = ? AND status = ?
+        """, (task.program_id, task.status))
+        next_order = cursor.fetchone()['next_order']
+        
+        cursor.execute('''
+            INSERT INTO tasks (name, description, status, patient_id, program_id, order_index, color, priority, modified_at, version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
+        ''', (task.name, task.description, task.status, 
+              getattr(task, 'patient_id', None),  # Use getattr to safely handle missing attribute
+              task.program_id, next_order, 
+              getattr(task, 'color', "#ffffff"),  # Use getattr for color too 
+              getattr(task, 'priority', "Medium")))  # And for priority
+        
+        task_id = cursor.lastrowid
+        self.conn.commit()
+        
+        # Return the task with its new ID
+        task.id = task_id
+        return task
     
     def get_tasks_by_program(self, program_id):
         """Get all tasks for a specific program."""
@@ -1233,8 +1208,11 @@ class Database:
                 name=row['name'],
                 description=row['description'],
                 status=row['status'],
+                patient_id=row['patient_id'],
                 program_id=row['program_id'],
                 order_index=row['order_index'] if 'order_index' in row.keys() else 0,
+                color=row['color'] if 'color' in row.keys() else "#ffffff",
+                priority=row['priority'] if 'priority' in row.keys() else "Medium",
                 created_at=row['created_at'] if 'created_at' in row.keys() else None,
                 modified_at=row['modified_at'] if 'modified_at' in row.keys() else None,
                 version=row['version'] if 'version' in row.keys() else 1
@@ -1261,14 +1239,17 @@ class Database:
                         name=task_data.get('name', ''),
                         description=task_data.get('description', ''),
                         status=task_data.get('status', 'To Do'),
-                        program_id=task_data.get('program_id')
+                        patient_id=task_data.get('patient_id'),
+                        program_id=task_data.get('program_id'),
+                        order_index=task_data.get('order_index', 0),
+                        color=task_data.get('color', "#ffffff"),
+                        priority=task_data.get('priority', "Medium"),
+                        version=task_data.get('version', 1)
                     )
                     if 'created_at' in task_data:
                         task.created_at = task_data['created_at']
                     if 'modified_at' in task_data:
                         task.modified_at = task_data['modified_at']
-                    if 'version' in task_data:
-                        task.version = task_data['version']
                     return task
                     
                 print(f"Unexpected response from API: {response}")
@@ -1294,8 +1275,11 @@ class Database:
                     name=row['name'],
                     description=row['description'],
                     status=row['status'],
+                    patient_id=row['patient_id'],
                     program_id=row['program_id'],
                     order_index=row['order_index'] if 'order_index' in row.keys() else 0,
+                    color=row['color'] if 'color' in row.keys() else "#ffffff",
+                    priority=row['priority'] if 'priority' in row.keys() else "Medium",
                     created_at=row['created_at'] if 'created_at' in row.keys() else None,
                     modified_at=row['modified_at'] if 'modified_at' in row.keys() else None,
                     version=row['version'] if 'version' in row.keys() else 1
@@ -1306,156 +1290,100 @@ class Database:
             return None
     
     def update_task(self, task, expected_version=None):
-        """Update an existing task in the database with concurrency control."""
-        # In remote mode, use API client
-        if self.mode == "remote":
-            try:
-                task_data = {
-                    'name': task.name,
-                    'description': task.description,
-                    'status': task.status,
-                    'program_id': task.program_id,
-                    'order_index': task.order_index
-                }
-                
-                print(f"Updating task {task.id} via API")
-                response = self.api_client.put(f"tasks/{task.id}", data=task_data)
-                
-                if 'error' in response:
-                    print(f"API error updating task: {response['error']}")
-                    return False
-                
-                return True
-            except Exception as e:
-                print(f"Error updating task via API: {e}")
-                return False
+        """Update a task.
         
-        # In local mode, use database
-        try:
-            # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
-                
-            cursor = self.conn.cursor()
+        Returns:
+            tuple: (success, conflict_data)
+                - success (bool): True if the update was successful, False if there was a conflict
+                - conflict_data (dict or None): If there was a conflict, contains the server task and client task
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # First check if the task exists and get the current version
+        cursor.execute("SELECT version FROM tasks WHERE id = ?", (task.id,))
+        row = cursor.fetchone()
+        if not row:
+            return (False, {"error": "Task not found"})
+        
+        current_version = row['version']
+        
+        # If expected_version is provided, check for conflicts
+        if expected_version is not None and current_version != expected_version:
+            # There's a conflict - another user has modified this task
+            # Get the current server version of the task
+            cursor.execute("SELECT * FROM tasks WHERE id = ?", (task.id,))
+            server_task = self._create_task_from_row(cursor.fetchone())
             
-            # If version checking is enabled, verify the current version
-            if expected_version is not None:
-                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task.id,))
-                row = cursor.fetchone()
-                if not row:
-                    print(f"Error: Task with ID {task.id} not found")
-                    return False
-                    
-                current_version = row['version']
-                if current_version != expected_version:
-                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
-                    return {'conflict': True, 'current_version': current_version}
-            
-            # Update the task with new version
-            cursor.execute(
-                """UPDATE tasks 
-                   SET name = ?, description = ?, status = ?, order_index = ?, 
-                       modified_at = CURRENT_TIMESTAMP, version = version + 1 
-                   WHERE id = ?""",
-                (task.name, task.description, task.status, task.order_index, task.id)
-            )
-            self.conn.commit()
-            
-            # Return the updated version for future operations
-            cursor.execute("SELECT version FROM tasks WHERE id = ?", (task.id,))
-            row = cursor.fetchone()
-            new_version = row['version'] if row else None
-            
-            return {'success': True, 'new_version': new_version}
-        except sqlite3.Error as e:
-            print(f"Error updating task: {e}")
-            return False
+            # Return conflict information
+            return (False, {
+                "server_task": server_task,
+                "client_task": task,
+                "error": "Conflict detected: This task has been modified by another user."
+            })
+        
+        # No conflict, proceed with the update
+        now = datetime.now().isoformat()
+        new_version = current_version + 1
+        
+        cursor.execute(
+            """UPDATE tasks 
+               SET name = ?, description = ?, status = ?, order_index = ?, 
+                   color = ?, priority = ?, version = ?, modified_at = ?
+               WHERE id = ?""",
+            (task.name, task.description, task.status, task.order_index, 
+             task.color if hasattr(task, 'color') else "#ffffff", 
+             task.priority if hasattr(task, 'priority') else "Medium",
+             new_version, now, task.id)
+        )
+        
+        # Update the task's version
+        task.version = new_version
+        task.modified_at = now
+        
+        self.conn.commit()
+        return (True, None)
     
     def update_task_status(self, task_id, new_status, expected_version=None):
         """Update only the status of a task with concurrency control."""
-        # In remote mode, use API client
-        if self.mode == "remote":
-            try:
-                # Get the existing task first
-                task = self.get_task_by_id(task_id)
-                if not task:
-                    print(f"Error: Cannot find task with ID {task_id}")
-                    return False
-                
-                # Update the task with the new status
-                task.status = new_status
-                task_data = {
-                    'name': task.name,
-                    'description': task.description,
-                    'status': new_status,
-                    'program_id': task.program_id,
-                    'order_index': task.order_index
-                }
-                
-                print(f"Updating task {task_id} status to {new_status} via API")
-                response = self.api_client.put(f"tasks/{task_id}", data=task_data)
-                
-                if 'error' in response:
-                    print(f"API error updating task status: {response['error']}")
-                    return False
-                
-                return True
-            except Exception as e:
-                print(f"Error updating task status via API: {e}")
-                return False
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
         
-        # In local mode, use database
-        try:
-            # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
-            
-            cursor = self.conn.cursor()
-            
-            # If version checking is enabled, verify the current version
-            if expected_version is not None:
-                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
-                row = cursor.fetchone()
-                if not row:
-                    print(f"Error: Task with ID {task_id} not found")
-                    return False
-                    
-                current_version = row['version']
-                if current_version != expected_version:
-                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
-                    return {'conflict': True, 'current_version': current_version}
-            
-            # Get highest order_index in the target column    
-            task = self.get_task_by_id(task_id)
-            if task:
-                cursor.execute("""
-                    SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order
-                    FROM tasks 
-                    WHERE program_id = ? AND status = ?
-                """, (task.program_id, new_status))
-                next_order = cursor.fetchone()['next_order']
-                
-                cursor.execute(
-                    """UPDATE tasks 
-                       SET status = ?, order_index = ?, modified_at = CURRENT_TIMESTAMP, 
-                           version = version + 1 
-                       WHERE id = ?""",
-                    (new_status, next_order, task_id)
-                )
-                self.conn.commit()
-                
-                # Return the updated version for future operations
-                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
-                row = cursor.fetchone()
-                new_version = row['version'] if row else None
-                
-                return {'success': True, 'new_version': new_version}
-            return False
-        except sqlite3.Error as e:
-            print(f"Error updating task status: {e}")
-            return False
+        # First check if the task exists and get the current version
+        cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+        if not row:
+            return (False, {"error": "Task not found"})
+        
+        task = self._create_task_from_row(row)
+        current_version = task.version
+        
+        # If expected_version is provided, check for conflicts
+        if expected_version is not None and current_version != expected_version:
+            # There's a conflict - another user has modified this task
+            # Return conflict information
+            return (False, {
+                "server_task": task,
+                "error": "Conflict detected: This task has been modified by another user."
+            })
+        
+        # No conflict, proceed with the update
+        now = datetime.now().isoformat()
+        new_version = current_version + 1
+        
+        cursor.execute(
+            """UPDATE tasks 
+               SET status = ?, version = ?, modified_at = ?
+               WHERE id = ?""",
+            (new_status, new_version, now, task_id)
+        )
+        
+        self.conn.commit()
+        
+        # Return the updated task
+        cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        updated_task = self._create_task_from_row(cursor.fetchone())
+        return (True, {"updated_task": updated_task})
     
     def update_task_order(self, task_id, new_order_index):
         """Update only the order of a task."""
@@ -1478,77 +1406,80 @@ class Database:
             print(f"Error updating task order: {e}")
             return False
             
-    def reorder_tasks(self, program_id, status, task_id, new_position, expected_version=None):
-        """Reorder tasks within a column with concurrency control."""
-        try:
-            # Check connection and reconnect if needed
-            if not self.check_connection():
-                print("Error: Database connection lost and couldn't be re-established")
-                return False
-                
-            cursor = self.conn.cursor()
+    def reorder_tasks(self, task_id, new_index, expected_version=None):
+        """Reorder a task within its column.
+        
+        Args:
+            task_id: ID of the task to reorder
+            new_index: New position within the column (0-based)
+            expected_version: Optional version to check for concurrency control
             
-            # If version checking is enabled, verify the current version
-            if expected_version is not None:
-                cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
-                row = cursor.fetchone()
-                if not row:
-                    print(f"Error: Task with ID {task_id} not found")
-                    return False
-                    
-                current_version = row['version']
-                if current_version != expected_version:
-                    print(f"Concurrency error: Expected version {expected_version} but found {current_version}")
-                    return {'conflict': True, 'current_version': current_version}
-            
-            # Get current task information
-            cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-            task_row = cursor.fetchone()
-            if not task_row:
-                return False
-                
-            current_index = task_row['order_index']
-            
-            # Update the positions of all affected tasks
-            if new_position > current_index:
-                # Moving down - shift tasks in between up
-                cursor.execute("""
-                    UPDATE tasks 
-                    SET order_index = order_index - 1, modified_at = CURRENT_TIMESTAMP, version = version + 1
-                    WHERE program_id = ? 
-                    AND status = ? 
-                    AND order_index > ? 
-                    AND order_index <= ?
-                """, (program_id, status, current_index, new_position))
+        Returns:
+            tuple: (success, conflict_data)
+                - success (bool): True if the update was successful, False if there was a conflict
+                - conflict_data (dict or None): If there was a conflict, contains error information
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # First get the task to be reordered
+        cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+        if not row:
+            return (False, {"error": "Task not found"})
+        
+        task = self._create_task_from_row(row)
+        current_version = task.version
+        
+        # If expected_version is provided, check for conflicts
+        if expected_version is not None and current_version != expected_version:
+            return (False, {
+                "server_task": task,
+                "error": "Conflict detected: This task has been modified by another user."
+            })
+        
+        # Get all tasks in the same column
+        cursor.execute(
+            "SELECT id, order_index FROM tasks WHERE program_id = ? AND status = ? ORDER BY order_index",
+            (task.program_id, task.status)
+        )
+        tasks = cursor.fetchall()
+        
+        # Create a list of task IDs in the current order
+        task_ids = [t['id'] for t in tasks]
+        
+        # If the task is not in the list, return error
+        if task_id not in task_ids:
+            return (False, {"error": "Task not found in the column"})
+        
+        # Remove the task from the current position
+        task_ids.remove(task_id)
+        
+        # Insert the task at the new position
+        if new_index >= len(task_ids):
+            task_ids.append(task_id)
+        else:
+            task_ids.insert(new_index, task_id)
+        
+        # Update the order_index for all tasks in the column
+        now = datetime.now().isoformat()
+        for i, tid in enumerate(task_ids):
+            if tid == task_id:
+                # Update the version for the reordered task
+                new_version = current_version + 1
+                cursor.execute(
+                    "UPDATE tasks SET order_index = ?, version = ?, modified_at = ? WHERE id = ?",
+                    (i, new_version, now, tid)
+                )
             else:
-                # Moving up - shift tasks in between down
-                cursor.execute("""
-                    UPDATE tasks 
-                    SET order_index = order_index + 1, modified_at = CURRENT_TIMESTAMP, version = version + 1
-                    WHERE program_id = ? 
-                    AND status = ? 
-                    AND order_index >= ? 
-                    AND order_index < ?
-                """, (program_id, status, new_position, current_index))
-            
-            # Set the new position for the moved task
-            cursor.execute("""
-                UPDATE tasks 
-                SET order_index = ?, modified_at = CURRENT_TIMESTAMP, version = version + 1
-                WHERE id = ?
-            """, (new_position, task_id))
-            
-            self.conn.commit()
-            
-            # Return the updated version for future operations
-            cursor.execute("SELECT version FROM tasks WHERE id = ?", (task_id,))
-            row = cursor.fetchone()
-            new_version = row['version'] if row else None
-            
-            return {'success': True, 'new_version': new_version}
-        except sqlite3.Error as e:
-            print(f"Error reordering tasks: {e}")
-            return False
+                # Just update the order_index for other tasks
+                cursor.execute(
+                    "UPDATE tasks SET order_index = ? WHERE id = ?",
+                    (i, tid)
+                )
+        
+        self.conn.commit()
+        return (True, None)
     
     def delete_task(self, task_id):
         """Delete a task."""
@@ -1608,6 +1539,7 @@ class Database:
             self.conn.commit()
             log_id = cursor.lastrowid
             return log_id
+            
         except sqlite3.Error as e:
             print(f"Error adding audit log: {e}")
             return 0
@@ -2352,3 +2284,20 @@ class Database:
         except sqlite3.Error as e:
             print(f"Error saving program kanban config: {e}")
             return False
+
+    def _create_task_from_row(self, row):
+        """Helper method to create a Task object from a database row."""
+        return Task(
+            id=row['id'],
+            name=row['name'],
+            description=row['description'],
+            status=row['status'],
+            patient_id=row['patient_id'] if 'patient_id' in row.keys() else None,
+            program_id=row['program_id'],
+            order_index=row['order_index'] if 'order_index' in row.keys() else 0,
+            color=row['color'] if 'color' in row.keys() else "#ffffff",
+            priority=row['priority'] if 'priority' in row.keys() else "Medium",
+            created_at=row['created_at'] if 'created_at' in row.keys() else None,
+            modified_at=row['modified_at'] if 'modified_at' in row.keys() else None,
+            version=row['version'] if 'version' in row.keys() else 1
+        )

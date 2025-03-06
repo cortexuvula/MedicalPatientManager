@@ -667,7 +667,7 @@ class MedicalPatientManager(QMainWindow):
             # Add tabs for each program
             for program in programs:
                 # Create Kanban board for this program
-                kanban = KanbanBoard(self.db, program.id)
+                kanban = KanbanBoard(self.db, program.id, patient_id=patient_id)
                 self.program_tabs.addTab(kanban, program.name)
         else:
             # No programs yet
