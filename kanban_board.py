@@ -321,11 +321,9 @@ class KanbanColumn(QWidget):
             }
             QPushButton:hover {
                 background-color: #2ecc71;
-                color: white !important;
             }
             QPushButton:pressed {
                 background-color: #219653;
-                color: white !important;
             }
         """)
         add_btn.clicked.connect(self.addTask)
@@ -1071,9 +1069,9 @@ class KanbanBoard(QWidget):
             # If no valid configuration, use defaults
             if not column_configs:
                 column_configs = [
-                    {"id": "todo", "title": "To Do"},
-                    {"id": "in_progress", "title": "In Progress"},
-                    {"id": "done", "title": "Done"}
+                    {"id": "todo", "title": "To Do", "color": "#f0f7ff"},         # Light blue for To Do
+                    {"id": "in_progress", "title": "In Progress", "color": "#fff7e6"}, # Light orange for In Progress
+                    {"id": "done", "title": "Done", "color": "#f0fff5"}           # Light green for Done
                 ]
         
         # Move the column to the new position
@@ -1118,14 +1116,60 @@ class KanbanBoard(QWidget):
         """Open a dialog to customize kanban board columns."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Customize Kanban Board")
-        dialog.setMinimumWidth(500)
+        dialog.setMinimumWidth(700)  # Increased from 500
+        dialog.setMinimumHeight(500)  # Added minimum height
         
-        layout = QVBoxLayout()
-        dialog.setLayout(layout)
+        # Apply styling to the dialog
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #f8f9fb;
+            }
+            QLabel {
+                font-family: 'Segoe UI';
+                font-size: 11pt;
+                color: #2c3e50;
+            }
+            QLineEdit, QComboBox, QSpinBox {
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+                padding: 8px;
+                background-color: white;
+                font-family: 'Segoe UI';
+                font-size: 10pt;
+                min-height: 28px;
+            }
+            QPushButton {
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-family: 'Segoe UI';
+                font-size: 10pt;
+                min-height: 28px;
+            }
+            QDialogButtonBox > QPushButton {
+                min-width: 100px;
+                background-color: #3498db;
+                color: white;
+            }
+            QDialogButtonBox > QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        
+        # Main layout for the dialog
+        main_layout = QVBoxLayout(dialog)
         
         # Get current column configs
         column_configs = self.db.get_program_kanban_config(self.program_id)
         column_configs_copy = copy.deepcopy(column_configs)  # Make a copy to work with
+        
+        # Tab widget for different settings
+        tab_widget = QTabWidget()
+        main_layout.addWidget(tab_widget)
+        
+        # Columns tab
+        columns_tab = QWidget()
+        columns_tab_layout = QVBoxLayout()
+        columns_tab.setLayout(columns_tab_layout)
         
         # Create a scroll area for columns
         scroll = QScrollArea()
@@ -1134,17 +1178,6 @@ class KanbanBoard(QWidget):
         columns_layout = QVBoxLayout()
         container.setLayout(columns_layout)
         scroll.setWidget(container)
-        
-        # Tab widget for different settings
-        tab_widget = QTabWidget()
-        layout.addWidget(tab_widget)
-        
-        # Columns tab
-        columns_tab = QWidget()
-        columns_tab_layout = QVBoxLayout()
-        columns_tab.setLayout(columns_tab_layout)
-        
-        # Add the scroll area to the columns tab
         columns_tab_layout.addWidget(scroll)
         
         # Store column widgets for later reference
@@ -1164,6 +1197,7 @@ class KanbanBoard(QWidget):
             row_layout.addWidget(title_label)
             
             title_edit = QLineEdit(config["title"])
+            title_edit.setMinimumWidth(150)  # Make title edit wider
             row_layout.addWidget(title_edit)
             
             # Column color picker
@@ -1255,17 +1289,15 @@ class KanbanBoard(QWidget):
         # Add concurrency tab
         tab_widget.addTab(concurrency_tab, "Concurrency Settings")
         
-        # Main dialog layout
-        dialog_layout = QVBoxLayout()
-        dialog_layout.addWidget(tab_widget)
+        # Add spacing before buttons
+        main_layout.addSpacing(20)
         
         # Add OK and Cancel buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(lambda: self.saveColumnCustomizations(dialog, column_configs_copy, column_widgets, conflict_mode_combo, refresh_interval_spinner))
         button_box.rejected.connect(dialog.reject)
-        dialog_layout.addWidget(button_box)
+        main_layout.addWidget(button_box)
         
-        dialog.setLayout(dialog_layout)
         dialog.exec_()
     
     def selectColumnColor(self, color_button, widget_idx, column_widgets):
@@ -1352,6 +1384,7 @@ class KanbanBoard(QWidget):
         row_layout.addWidget(title_label)
         
         title_edit = QLineEdit(new_column_title)
+        title_edit.setMinimumWidth(150)  # Make title edit wider
         row_layout.addWidget(title_edit)
         
         # Column color picker
@@ -1444,28 +1477,86 @@ class KanbanBoard(QWidget):
         if not program:
             QMessageBox.warning(self, "Error", "Program not found")
             return
-            
-        new_name, ok = QInputDialog.getText(
-            self, "Edit Program", "Program name:", 
-            QLineEdit.Normal, program.name
-        )
         
-        if ok and new_name:
-            program.name = new_name
-            success = self.db.update_program(program)
-            
-            if success:
-                # Update the tab title if this is within a tab widget
-                parent = self.parent()
-                if isinstance(parent, QTabWidget):
-                    index = parent.indexOf(self)
-                    if index != -1:
-                        parent.setTabText(index, new_name)
-                        
-                # Update the header title
-                self.findChild(QLabel).setText(new_name)
-            else:
-                QMessageBox.warning(self, "Error", "Failed to update program name")
+        # Create a custom dialog instead of using QInputDialog for more size control
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Program")
+        dialog.setMinimumWidth(400)  # Increased width
+        dialog.setMinimumHeight(150)  # Increased height
+        
+        # Create a form layout for the dialog
+        layout = QVBoxLayout(dialog)
+        
+        # Add label and input field
+        form_layout = QFormLayout()
+        name_input = QLineEdit(program.name)
+        name_input.setMinimumHeight(30)  # Taller input field
+        name_input.setFont(QFont("Segoe UI", 11))
+        
+        form_layout.addRow("Program name:", name_input)
+        layout.addLayout(form_layout)
+        
+        # Add some spacing
+        layout.addSpacing(20)
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        # Apply some styling to the dialog
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #f8f9fb;
+            }
+            QLabel {
+                font-family: 'Segoe UI';
+                font-size: 11pt;
+                color: #2c3e50;
+            }
+            QLineEdit {
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+                padding: 8px;
+                background-color: white;
+                font-family: 'Segoe UI';
+                font-size: 11pt;
+                color: #2c3e50;
+            }
+            QPushButton {
+                padding: 8px 16px;
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        
+        # Show the dialog and get result
+        result = dialog.exec_()
+        
+        if result == QDialog.Accepted:
+            new_name = name_input.text().strip()
+            if new_name:
+                program.name = new_name
+                success = self.db.update_program(program)
+                
+                if success:
+                    # Update the tab title if this is within a tab widget
+                    parent = self.parent()
+                    if isinstance(parent, QTabWidget):
+                        index = parent.indexOf(self)
+                        if index != -1:
+                            parent.setTabText(index, new_name)
+                            
+                    # Update the header title
+                    self.findChild(QLabel).setText(new_name)
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to update program name")
 
 
 class TaskDialog(QDialog):
@@ -1484,7 +1575,6 @@ class TaskDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #f8f9fb;
-                border-radius: 8px;
             }
             QLabel {
                 font-family: 'Segoe UI';
