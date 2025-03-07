@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QTabWidget, QApplication, QDialogButtonBox, QComboBox, QSpinBox,
                              QColorDialog, QSizePolicy, QToolButton)
 from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QTimer, QSettings, QSize
-from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor, QColor
+from PyQt5.QtGui import QDrag, QFont, QPixmap, QCursor, QColor, QPainter, QPen
 import copy
 
 from models import Task, Program
@@ -251,7 +251,9 @@ class KanbanColumn(QWidget):
         self.color = color  # Background color for the column
         self.setAcceptDrops(True)
         
-        # We'll implement our own drag functionality
+        # Drop indicator flag
+        self.drop_indicator_visible = False
+        self.drop_indicator_side = None  # "left" or "right"
         
         self.initUI()
     
@@ -278,28 +280,65 @@ class KanbanColumn(QWidget):
         header_container = QFrame()
         header_container.setMinimumHeight(40)
         header_container.setMaximumHeight(40)
+        header_container.setObjectName("headerContainer")
         header_container.setStyleSheet(f"""
-            QFrame {{
+            #headerContainer {{
                 background-color: {self.darken_color(self.color, 0.05)};
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
                 border-bottom: 1px solid #d0d0d0;
+            }}
+            
+            #headerContainer:hover {{
+                background-color: {self.darken_color(self.color, 0.1)};
             }}
         """)
         
         header_layout = QHBoxLayout(header_container)
         header_layout.setContentsMargins(10, 0, 10, 0)
         
+        # Create a drag handle container to highlight it better
+        drag_handle_container = QFrame()
+        drag_handle_container.setFixedSize(24, 24)
+        drag_handle_container.setObjectName("dragHandleContainer")
+        drag_handle_container.setStyleSheet("""
+            #dragHandleContainer {
+                background-color: rgba(0, 0, 0, 0.05);
+                border-radius: 4px;
+                border: none;
+            }
+            #dragHandleContainer:hover {
+                background-color: rgba(0, 0, 0, 0.1);
+            }
+        """)
+        drag_handle_layout = QHBoxLayout(drag_handle_container)
+        drag_handle_layout.setContentsMargins(0, 0, 0, 0)
+        drag_handle_layout.setSpacing(0)
+        
+        # Add drag handle icon
+        self.drag_handle = QLabel("☰")  # Unicode "trigram for heaven" symbol as a drag handle
+        self.drag_handle.setFont(QFont("Segoe UI", 12))
+        self.drag_handle.setStyleSheet("""
+            color: #555;
+            padding: 0px;
+        """)
+        self.drag_handle.setCursor(Qt.SizeAllCursor)  # Set cursor directly on widget instead of via stylesheet
+        self.drag_handle.setAlignment(Qt.AlignCenter)
+        self.drag_handle.setToolTip("Drag to reorder column")
+        self.drag_handle.setMouseTracking(True)
+        self.drag_handle.installEventFilter(self)
+        
+        drag_handle_layout.addWidget(self.drag_handle)
+        header_layout.addWidget(drag_handle_container)
+        
         # Title (click and drag to move)
         self.title_label = QLabel(self.title)
         self.title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        self.title_label.setStyleSheet("color: #2c3e50;")
+        self.title_label.setStyleSheet("color: #2c3e50;")  # Remove cursor move since we have a dedicated handle
+        self.title_label.setToolTip("Drag the handle to reorder column")
         
-        # Make title label draggable
-        self.title_label.setMouseTracking(True)
-        self.title_label.installEventFilter(self)
-        
-        header_layout.addWidget(self.title_label)
+        # Title no longer needs to be draggable, we use just the handle
+        header_layout.addWidget(self.title_label, 1)  # Give title expanding space
         
         # Add spacer to push the add button to the right
         header_layout.addStretch(1)
@@ -389,7 +428,7 @@ class KanbanColumn(QWidget):
     
     def eventFilter(self, obj, event):
         """Handle mouse events for the column header."""
-        if obj == self.title_label:
+        if obj == self.drag_handle:
             if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_start_position = event.pos()
                 return True
@@ -397,23 +436,47 @@ class KanbanColumn(QWidget):
                 # Check if dragging has started
                 if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
                     return True
-                    
+                
                 # Create drag object
-                drag = QDrag(obj)
+                drag = QDrag(self)  
                 mime_data = QMimeData()
                 mime_data.setText(f"kanban_column:{self.status}")
                 drag.setMimeData(mime_data)
                 
                 # Create pixmap for dragging
                 pixmap = self.grab()
-                drag.setPixmap(pixmap)
-                drag.setHotSpot(event.pos())
+                # Scale down pixmap for better visual during drag
+                scaled_pixmap = pixmap.scaled(int(pixmap.width() * 0.8), int(pixmap.height() * 0.8), 
+                                           Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                drag.setPixmap(scaled_pixmap)
+                # Adjust hotspot for more intuitive dragging
+                drag.setHotSpot(QPoint(scaled_pixmap.width() // 2, 20))
                 
                 # Execute the drag
-                result = drag.exec_(Qt.MoveAction)
+                drag.exec_(Qt.MoveAction)
                 return True
                 
         return super().eventFilter(obj, event)
+    
+    def paintEvent(self, event):
+        """Override paint event to draw drop indicators when needed."""
+        super().paintEvent(event)
+        
+        # If we're showing a drop indicator, draw it
+        if self.drop_indicator_visible and self.drop_indicator_side:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Use a bright blue color for the indicator
+            indicator_color = QColor("#2980b9")
+            painter.setPen(QPen(indicator_color, 4))
+            
+            if self.drop_indicator_side == "left":
+                # Draw indicator on left side
+                painter.drawLine(0, 0, 0, self.height())
+            else:  # right side
+                # Draw indicator on right side
+                painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
     
     def setTitle(self, title):
         """Set the column title."""
@@ -445,7 +508,14 @@ class KanbanColumn(QWidget):
             text = mime_data.text()
             if text.startswith("kanban_column:"):
                 # This is a column being dragged
-                event.acceptProposedAction()
+                dragged_status = text.split(":", 1)[1]
+                if dragged_status != self.status:  # Don't accept drag from self
+                    event.acceptProposedAction()
+                    # Show drop indicator
+                    self.drop_indicator_visible = True
+                    # Determine which side to show the indicator
+                    self.drop_indicator_side = "left" if event.pos().x() < self.width() / 2 else "right"
+                    self.update()  # Trigger repaint
             elif ":task" in text:
                 # This is a task being dragged
                 event.acceptProposedAction()
@@ -455,24 +525,69 @@ class KanbanColumn(QWidget):
     
     def dragMoveEvent(self, event):
         # Accept drag move events to enable proper drop positioning
-        event.acceptProposedAction()
+        mime_data = event.mimeData()
+        if mime_data.hasText():
+            text = mime_data.text()
+            if text.startswith("kanban_column:"):
+                dragged_status = text.split(":", 1)[1]
+                if dragged_status != self.status:  # Don't accept drag from self
+                    event.acceptProposedAction()
+                    # Show drop indicator and update position
+                    self.drop_indicator_visible = True
+                    # Determine which side to show the indicator
+                    self.drop_indicator_side = "left" if event.pos().x() < self.width() / 2 else "right"
+                    self.update()  # Trigger repaint
+            else:
+                event.acceptProposedAction()
+    
+    def dragLeaveEvent(self, event):
+        """Hide drop indicator when drag leaves."""
+        self.drop_indicator_visible = False
+        self.update()  # Trigger repaint
+        super().dragLeaveEvent(event)
     
     def dropEvent(self, event):
+        # Hide drop indicator
+        self.drop_indicator_visible = False
+        self.update()  # Trigger repaint
+        
         mime_data = event.mimeData()
         if mime_data.hasText():
             text = mime_data.text()
             if text.startswith("kanban_column:"):
                 # Extract dragged column ID
                 dragged_column_id = text.split(":", 1)[1]
-                # Let the parent handle column reordering
-                parent = self.parent()
-                if parent:
+                
+                # Find the KanbanBoard parent
+                kanban_board = None
+                current = self
+                while current:
+                    if isinstance(current.parent(), QWidget) and hasattr(current.parent(), 'columns'):
+                        kanban_board = current.parent()
+                        break
+                    current = current.parent()
+                
+                if kanban_board:
+                    # Get visible columns in the correct order
+                    all_columns = []
+                    for i in range(kanban_board.columns_layout.count()):
+                        item = kanban_board.columns_layout.itemAt(i)
+                        if item and item.widget() and isinstance(item.widget(), KanbanColumn):
+                            all_columns.append(item.widget())
+                    
                     # Find the index of this column
-                    for i, column in enumerate(parent.findChildren(KanbanColumn)):
-                        if column == self:
-                            # Emit signal to reorder columns
-                            self.columnMoved.emit(dragged_column_id, i)
+                    target_index = -1
+                    for i, col in enumerate(all_columns):
+                        if col == self:
+                            target_index = i
+                            # Adjust target index based on drop position (left or right side)
+                            if event.pos().x() > self.width() / 2:
+                                target_index += 1  # Drop on right side moves to position after this column
                             break
+                    
+                    if target_index >= 0:
+                        # Emit signal to move column
+                        self.columnMoved.emit(dragged_column_id, target_index)
             elif ":task" in text:
                 # Extract task ID
                 task_id = int(text.split(":", 1)[0])
@@ -1050,6 +1165,8 @@ class KanbanBoard(QWidget):
     
     def onColumnMoved(self, column_id, new_position):
         """Update column order when a column is moved."""
+        print(f"onColumnMoved called: {column_id} -> position {new_position}")
+        
         # Get the program-specific column configuration
         column_configs = self.db.get_program_kanban_config(self.program_id)
         
@@ -1074,15 +1191,43 @@ class KanbanBoard(QWidget):
                     {"id": "done", "title": "Done", "color": "#f0fff5"}           # Light green for Done
                 ]
         
-        # Move the column to the new position
+        # Print current configuration for debugging
+        print(f"Current column configs before move: {column_configs}")
+        
+        # Find the column to move
+        column_to_move = None
+        original_index = -1
+        
         for i, column in enumerate(column_configs):
             if column["id"] == column_id:
-                column_configs.pop(i)
-                column_configs.insert(new_position, column)
+                column_to_move = column
+                original_index = i
                 break
         
+        if column_to_move is None:
+            print(f"Error: Column with ID {column_id} not found in configuration")
+            return
+            
+        # Adjust new_position if it's invalid
+        if new_position < 0:
+            new_position = 0
+        elif new_position >= len(column_configs):
+            new_position = len(column_configs) - 1
+        
+        # Remove the column from its original position
+        column_configs.pop(original_index)
+        
+        # Insert it at the new position
+        column_configs.insert(new_position, column_to_move)
+        
+        print(f"New column configs after move: {column_configs}")
+        
         # Save the updated program-specific configuration
-        self.db.save_program_kanban_config(self.program_id, column_configs)
+        try:
+            result = self.db.save_program_kanban_config(self.program_id, column_configs)
+            print(f"Save result: {result}")
+        except Exception as e:
+            print(f"Error saving column config: {e}")
         
         # Update the column titles in the UI
         self.createColumns()
@@ -1136,22 +1281,19 @@ class KanbanBoard(QWidget):
                 background-color: white;
                 font-family: 'Segoe UI';
                 font-size: 10pt;
-                min-height: 28px;
+                color: #2c3e50;
+                selection-background-color: #3498db;
             }
-            QPushButton {
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-family: 'Segoe UI';
-                font-size: 10pt;
-                min-height: 28px;
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+                border-color: #3498db;
             }
-            QDialogButtonBox > QPushButton {
-                min-width: 100px;
-                background-color: #3498db;
-                color: white;
-            }
-            QDialogButtonBox > QPushButton:hover {
-                background-color: #2980b9;
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left-width: 0px;
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
             }
         """)
         
@@ -1465,7 +1607,7 @@ class KanbanBoard(QWidget):
                         widget = row_item.layout().itemAt(j).widget()
                         if isinstance(widget, QPushButton) and widget.text() == "Delete":
                             old_index = widget.property("column_index")
-                            if old_index > index:
+                            if old_index is not None and old_index > index:
                                 widget.setProperty("column_index", old_index - 1)
                                 # Update the click handler
                                 widget.clicked.disconnect()
